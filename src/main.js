@@ -45,6 +45,7 @@ if (!edgesManager.edgeRegistry) {
 }
 const uiManager = new UIManager();
 const eventsManager = new EventsManager(window.camera, nodesManager, uiManager, ship);
+window.eventsManager = eventsManager;
 
 // Create the network manager, which will update nodes (and the physics simulation) periodically
 const networkManager = new NetworkManager(nodesManager, edgesManager);

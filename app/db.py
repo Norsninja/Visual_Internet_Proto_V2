@@ -20,11 +20,12 @@ class Neo4jDB:
         self.driver.close()
 
     def init_constraints(self):
-        """Create constraints to enforce uniqueness on node IDs."""
         with self.driver.session() as session:
+            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (a:ASNNode) REQUIRE a.id IS UNIQUE")
             session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (n:NetworkNode) REQUIRE n.id IS UNIQUE")
             session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (w:WebNode) REQUIRE w.id IS UNIQUE")
             session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (s:Scan) REQUIRE s.id IS UNIQUE")
+
 
     def upsert_network_node(self, node):
         """
@@ -60,6 +61,94 @@ class Neo4jDB:
         web_node.setdefault("color", "#FF69B4")  # Hot pink for web nodes
         with self.driver.session() as session:
             session.run(query, id=id_value, props=props)
+                
+    def upsert_asn_node(self, asn_data, prefixes=[], peers=[]):
+        """
+        Insert or update an ASN Node while merging prefix and peer arrays.
+        asn_data is a dict like {'asn': 15169, 'holder': 'GOOGLE'}.
+        """
+        node_id = f"AS{asn_data['asn']}"
+        props = {
+            "asn": asn_data['asn'],
+            "holder": asn_data.get("holder", "Unknown"),
+            "color": "#FFD700",  # Gold for ASN nodes
+            "last_seen": time.time()
+        }
+
+        # New values from the current scan
+        new_prefixes = prefixes
+        new_peers = peers
+
+        with self.driver.session() as session:
+            # Retrieve any existing prefixes and peers
+            result = session.run(
+                "MATCH (a:ASNNode {id: $id}) RETURN a.prefixes AS prefixes, a.peers AS peers",
+                id=node_id
+            )
+            record = result.single()
+            if record:
+                existing_prefixes = record["prefixes"] or []
+                existing_peers = record["peers"] or []
+                # Merge arrays without duplicates
+                merged_prefixes = list(set(existing_prefixes + new_prefixes))
+                merged_peers = list(set(existing_peers + new_peers))
+                props["prefixes"] = merged_prefixes
+                props["peers"] = merged_peers
+            else:
+                props["prefixes"] = new_prefixes
+                props["peers"] = new_peers
+            
+            query = """
+            MERGE (a:ASNNode {id: $id})
+            SET a += $props
+            """
+            session.run(query, id=node_id, props=props)
+
+    def store_bgp_scan(self, target, bgp_data):
+        """
+        Store BGP scan results as a separate scan node (Scan:BGPScan) and update relationships.
+        
+        bgp_data is expected to be a dict like:
+        {
+        "asn": {"asn": 15169, "holder": "GOOGLE"},
+        "prefixes": [...],
+        "peers": [...]
+        }
+        """
+        scan_id = f"bgpscan-{target}-{int(time.time())}"
+        
+        # Create the BGP scan node and attach it to the network node
+        query_scan = """
+        MERGE (s:Scan:BGPScan {id: $scan_id})
+        SET s.target = $target,
+            s.asn = $asn,
+            s.holder = $holder,
+            s.prefixes = $prefixes,
+            s.peers = $peers,
+            s.timestamp = $timestamp
+        WITH s
+        MATCH (n:NetworkNode {id: $target})
+        CREATE (s)-[:RESULTS_IN]->(n)
+        """
+        
+        with self.driver.session() as session:
+            session.run(
+                query_scan,
+                scan_id=scan_id,
+                target=target,
+                asn=bgp_data['asn']['asn'],
+                holder=bgp_data['asn'].get('holder', "Unknown"),
+                prefixes=bgp_data.get('prefixes', []),
+                peers=bgp_data.get('peers', []),
+                timestamp=time.time()
+            )
+        
+        print(f"Stored BGP scan for {target}: {bgp_data}")
+        
+        # Create a relationship between the ASN node and the network node.
+        # It assumes that you've already upserted the ASN node.
+        asn_node_id = f"AS{bgp_data['asn']['asn']}"
+        self.create_asn_network_relationship(asn_node_id, target, "HAS_NETWORK", {"timestamp": time.time()})
 
 
     def create_relationship(self, source_id, target_id, relationship_type, properties={}):
@@ -80,17 +169,32 @@ class Neo4jDB:
         with self.driver.session() as session:
             session.run(query, source_id=source_id, target_id=target_id, properties=properties)
 
+    def create_asn_network_relationship(self, asn_node_id, network_node_id, relationship_type, properties={}):
+        """
+        Create a relationship between an ASN node and a Network node.
+        This method explicitly matches an ASNNode for the source and a NetworkNode for the target.
+        """
+        query = """
+        MATCH (a:ASNNode {id: $asn_node_id})
+        MATCH (b:NetworkNode {id: $network_node_id})
+        MERGE (a)-[r:%s]->(b)
+        SET r += $properties
+        """ % (relationship_type)
+        with self.driver.session() as session:
+            session.run(query, asn_node_id=asn_node_id, network_node_id=network_node_id, properties=properties)
 
-    def store_traceroute(self, target_ip, hops):
-        """Store traceroute results in the database."""
+
+    def store_traceroute(self, target_ip, hops, traceroute_mode="local"):
         if not hops:
             print(f"No valid hops for {target_ip}, skipping storage.")
             return
 
         prev_hop = target_ip
         for hop in hops:
-            # Support both dict and string types for hop
             hop_ip = hop["ip"] if isinstance(hop, dict) and "ip" in hop else hop
+            # Skip invalid hops (like "*")
+            if hop_ip == "*" or hop_ip.strip() == "":
+                continue
 
             node_dict = {
                 "id": hop_ip,
@@ -100,13 +204,16 @@ class Neo4jDB:
                 "role": "External Node",
                 "color": "red",  # External nodes are red
                 "last_seen": time.time(),
-                "tracerouted": (hop_ip == target_ip)  # Mark tracerouted for the target of the traceroute
+                "tracerouted": (hop_ip == target_ip)
             }
             self.upsert_network_node(node_dict)
-            self.create_relationship(prev_hop, hop_ip, "TRACEROUTE_HOP", {"timestamp": time.time()})
+            self.create_relationship(prev_hop, hop_ip, "TRACEROUTE_HOP",
+                                    {"timestamp": time.time(), "traceroute_mode": traceroute_mode})
             prev_hop = hop_ip
 
-        print(f"Stored traceroute for {target_ip}: {hops}")
+        print(f"Stored {traceroute_mode} traceroute for {target_ip}: {hops}")
+
+
 
     def store_port_scan(self, target_ip, ports):
         """Store port scan results and update the network node with discovered ports."""
@@ -124,7 +231,8 @@ class Neo4jDB:
         # Update the NetworkNode to include discovered ports
         query_update_node = """
         MATCH (n:NetworkNode {id: $target})
-        SET n.ports = $ports
+        SET n.ports = $ports,
+        n.scanned_ports = true
         """
 
         with self.driver.session() as session:
@@ -151,7 +259,7 @@ class Neo4jDB:
         print(f"Stored SSL scan for {target_ip}")
 
     def fetch_full_graph(self):
-        """Retrieve all nodes and relationships, including unconnected nodes."""
+        """Retrieve all nodes and relationships, ensuring node ids are strings."""
         query = """
         MATCH (n) OPTIONAL MATCH (n)-[r]->(m)
         RETURN n, r, m
@@ -163,17 +271,20 @@ class Neo4jDB:
             for record in result:
                 node_obj = record["n"]
                 node = dict(node_obj)
-                # Use the node's "id" property if it exists, otherwise use the internal id
                 node_id = node.get("id")
                 if not node_id:
                     node_id = node_obj.id  # fallback to internal id
-                    node["id"] = node_id
-                nodes[node_id] = node
+                # Ensure node_id is a string
+                node["id"] = str(node_id)
+                nodes[node["id"]] = node
                 if record["r"]:
                     start_node = record["r"].start_node
                     end_node = record["r"].end_node
                     source_id = start_node.get("id", start_node.id)
                     target_id = end_node.get("id", end_node.id)
+                    # Force relationship node ids to be strings
+                    source_id = str(source_id)
+                    target_id = str(target_id)
                     edges.append({
                         "source": source_id,
                         "target": target_id,
@@ -181,6 +292,7 @@ class Neo4jDB:
                         "properties": dict(record["r"])
                     })
         return {"nodes": list(nodes.values()), "edges": edges}
+
 
 
     
@@ -314,7 +426,7 @@ class Neo4jDB:
                     "tracerouted": (hop_ip == external_target_config)  # Mark tracerouted when appropriate
                 }
                 db.upsert_network_node(node_dict)
-                db.create_relationship(prev_hop, hop_ip, "TRACEROUTE_HOP", {"timestamp": now})
+                db.create_relationship(prev_hop, hop_ip, "TRACEROUTE_HOP", {"timestamp": now, "traceroute_mode": "local"})
                 prev_hop = hop_ip
 
         logging.info("Graph data successfully updated.")

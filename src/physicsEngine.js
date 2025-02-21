@@ -7,6 +7,36 @@ import {
   forceZ,
   forceCollide
 } from 'd3-force-3d';
+function forceAttractASN() {
+  let nodes, asnNodes = [];
+  const strength = 0.2; // Weaker pull
+
+  function force(alpha) {
+    asnNodes = nodes.filter(n => String(n.id).startsWith("AS"));
+
+    nodes.forEach(n => {
+      if (!String(n.id).startsWith("AS")) {
+        asnNodes.forEach(a => {
+          let dx = a.x - n.x, dy = a.y - n.y, dz = a.z - n.z;
+          let distance = Math.sqrt(dx * dx + dy * dy) || 1;
+
+          if (distance > 300) {  // Keep a natural spread, avoid extreme pull
+            let factor = (strength * alpha) / (distance * 0.5); // Scale attraction down
+            n.vx += dx * factor;
+            n.vy += dy * factor;
+            n.vz += dz * factor;
+          }
+        });
+      }
+    });
+  }
+
+  force.initialize = function(_nodes) {
+    nodes = _nodes;
+  };
+
+  return force;
+}
 
 export class PhysicsEngine {
   constructor(nodesArray, edgesArray, nodeRegistry) {
@@ -24,15 +54,18 @@ export class PhysicsEngine {
     //    - Collide keeps nodes from overlapping
     //    - alphaDecay is lower, so it won’t freeze too quickly
     this.simulation = forceSimulation(this.nodes)
-      .force('charge', forceManyBody().strength(-50)) 
+      .force('charge', forceManyBody().strength(d => d.id.startsWith("AS") ? -50 : -400))
       .force('link', forceLink(this.links)
         .id(d => d.id)
-        .distance(60) // Or a function: .distance(link => link.layer === 'web' ? 20 : 60)
+        .distance(d => (String(d.source.id).startsWith("AS") ? 200 : 100)) // Access ID properly
         .strength(0.2)
       )
-      .force('center', forceCenter(0, 0, 0).strength(0.02)) 
-      .force('z', forceZ(0).strength(0.002)) 
-      .force('collision', forceCollide().radius(5).strength(0.8)) 
+
+      .force('center', forceCenter(0, 0, 0).strength(0.01))
+      .force('z', forceZ(0).strength(0.01))
+      .force('collision', forceCollide().radius(5).strength(0.9))
+      // Add our custom attraction force for ASN nodes
+      .force('attractASN', forceAttractASN())
       .alphaDecay(0.001);
 
     // 3) Pin the router node if it exists
@@ -67,9 +100,9 @@ export class PhysicsEngine {
       } else {
         nodeObj = {
           id: rawNode.id,
-          x: (Math.random() - 0.5) * 200,
-          y: (Math.random() - 0.5) * 200,
-          z: (Math.random() - 0.5) * 200,
+          x: (Math.random() - 0.5) * 400,
+          y: (Math.random() - 0.5) * 400,
+          z: (Math.random() - 0.5) * 400,
         };
       }
       newNodes.push(nodeObj);
@@ -81,13 +114,19 @@ export class PhysicsEngine {
    * Pin the router node to the origin if it exists.
    */
   pinRouter() {
-    const router = this.nodes.find(n => n.id === 'router');
+    // Find a node whose corresponding mesh has userData.type === "router"
+    const router = this.nodes.find(n => {
+      const mesh = this.nodeRegistry.get(n.id);
+      return mesh && mesh.userData.type === "router";
+    });
     if (router) {
-      router.fx = 0;
-      router.fy = 0;
-      router.fz = 0;
+      // Pin the router at its current position
+      router.fx = router.x;
+      router.fy = router.y;
+      router.fz = router.z;
     }
   }
+  
 
   /**
    * Rebuild nodes & links, then lightly or strongly reheat the simulation depending on changes.
@@ -109,7 +148,9 @@ export class PhysicsEngine {
     const linksChanged = this.links.length !== prevLinkCount;
 
     // Reheat the simulation. If big changes, alpha=1; else small nudge with alpha=0.2
-    const newAlpha = (nodesChanged || linksChanged) ? 1 : 0.2;
+    const newAlpha = (nodesChanged || linksChanged) ? 0.5 : 0.2;
     this.simulation.alpha(newAlpha).restart();
   }
+  
 }
+

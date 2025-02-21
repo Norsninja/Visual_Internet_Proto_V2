@@ -12,6 +12,7 @@ from web_scanner import fetch_website_metadata, extract_hyperlinks
 # from db import update_node, update_edge, get_node_by_id
 import threading
 import requests
+from bgp_scanner import scan_asn 
 
 def immediate_traceroute_update(new_target):
     hops = run_traceroute(target=new_target)
@@ -64,13 +65,15 @@ def register_routes(app):
             hops = response.json().get("hops", [])
 
             if hops:
-                db.store_traceroute(target, hops)
+                # Pass traceroute_mode="remote" here
+                db.store_traceroute(target, hops, traceroute_mode="remote")
 
             return jsonify({"target": target, "hops": hops, "cached": False})
 
         except Exception as e:
             logging.error(f"Error contacting remote traceroute server: {e}")
             return jsonify({"error": "Failed to retrieve remote traceroute"}), 500
+
     
     @app.route('/full_graph', methods=['GET'])
     def full_graph():
@@ -86,7 +89,7 @@ def register_routes(app):
     def get_network():
         try:
             query = """
-            MATCH (n:NetworkNode|WebNode)
+            MATCH (n) WHERE n:NetworkNode OR n:WebNode OR n:ASNNode
             OPTIONAL MATCH (n)-[r]->(m)
             RETURN n, r, m
             """
@@ -185,6 +188,58 @@ def register_routes(app):
         except Exception as e:
             logging.error(f"Error calculating traffic rate: {e}")
             return jsonify({"error": "Failed to retrieve traffic rate"}), 500
+
+
+    @app.route('/bgp_scan', methods=['GET'])
+    def bgp_scan():
+        """
+        Accepts a target (IP or ASN), performs a BGP scan,
+        and stores/updates ASN and network data in Neo4j.
+        """
+        target = request.args.get('target')
+        if not target:
+            return jsonify({'error': 'Missing target parameter'}), 400
+
+        # Perform the BGP scan from bgp_scanner.py
+        results = scan_asn(target)
+        if 'error' in results:
+            return jsonify(results), 404
+
+        asn_info = results['asn']  # e.g., {'asn': 15169, 'holder': 'GOOGLE'} or {'asn': 30081, 'holder': 'CACHENETWORKS'}
+        peers = results.get('peers', [])
+        prefixes = results.get('prefixes', [])
+
+        # Upsert the ASN node (merging prefixes and peers)
+        db.upsert_asn_node(asn_info, prefixes, peers)
+
+        # Optionally, for each prefix, create or update a NetworkNode and create an "ANNOUNCES" relationship
+        for prefix in prefixes:
+            network_node = {
+                "id": prefix,
+                "label": f"Prefix {prefix}",
+                "type": "network",
+                "last_seen": time.time(),
+                "color": "#0099FF"
+            }
+            db.upsert_network_node(network_node)
+            db.create_asn_network_relationship(f"AS{asn_info['asn']}", prefix, "ANNOUNCES", {"timestamp": time.time()})
+        
+        # For each peer, upsert that ASN node and create a "BGP_PEER" relationship
+        for peer in peers:
+            db.upsert_asn_node({'asn': peer, 'holder': "Unknown"})
+            db.create_asn_network_relationship(f"AS{asn_info['asn']}", f"AS{peer}", "BGP_PEER", {"timestamp": time.time()})
+        
+        # Store the BGP scan as a separate scan node and link it to the network node
+        db.store_bgp_scan(target, results)
+
+        return jsonify({
+            "status": "success",
+            "data": {
+                "asn": asn_info,
+                "prefixes": prefixes,
+                "peers": peers
+            }
+        })
             
     @app.route('/web_scan', methods=['GET'])
     def web_scan():
@@ -198,15 +253,34 @@ def register_routes(app):
             return jsonify({'error': 'Missing IP or Port parameter'}), 400
 
         # Fetch metadata and hyperlinks
-        metadata = fetch_website_metadata(ip, port)
-        links_data = extract_hyperlinks(ip, port)
+        try:
+            metadata = fetch_website_metadata(ip, port)
+        except Exception as e:
+            logging.error(f"Metadata fetch failed for {ip}:{port}: {e}")
+            metadata = {}
+
+        try:
+            links_data = extract_hyperlinks(ip, port)
+        except Exception as e:
+            logging.error(f"Hyperlink extraction failed for {ip}:{port}: {e}")
+            links_data = {}
+
 
         if "error" in metadata or "error" in links_data:
+            logging.warning(f"Web scan error for {ip}:{port}: metadata={metadata}, links={links_data}")
+            # Optionally, you might update your node to indicate that the scan failed, e.g.:
+            query_update_node = """
+            MATCH (n:NetworkNode {id: $ip})
+            SET n.webScan = false, n.web_scanned = true
+            """
+            with db.driver.session() as session:
+                session.run(query_update_node, ip=ip)
             return jsonify({
-                'error': 'Web scan failed',
-                'metadata': metadata,
-                'links': links_data
-            }), 500
+                "status": "success",
+                "metadata": {},
+                "links": []
+            })
+
 
         # Ensure the NetworkNode (IP) exists in the database
         if not db.get_node_by_id(ip):
@@ -251,6 +325,13 @@ def register_routes(app):
         """
         with db.driver.session() as session:
             session.run(query_scan, scan_id=scan_id, ip=ip, timestamp=time.time())
+        # After storing the scan record, update the node with a scanned flag.
+        query_update_node = """
+        MATCH (n:NetworkNode {id: $ip})
+        SET n.webScan = true, n.web_scanned = true
+        """
+        with db.driver.session() as session:
+            session.run(query_update_node, ip=ip)
 
         # Process each hyperlink from the scan
         for link in links_data.get("links", []):

@@ -13,22 +13,30 @@ export class NodesManager {
     this.physicsEngine = null;      // We'll instantiate it once we have data
   }
 
-  // We add edgesData as a second parameter:
+  // Main updateNodes method now calls three specialized helper functions
   updateNodes(nodesData, edgesData) {
-    // 1. Update central state with new node data
+    this.updateGraphState(nodesData);
+    this.reconcileSceneMeshes();
+    this.updatePhysicsEngine(edgesData);
+  }
+
+  // 1. Update the central GraphState with new node data.
+  updateGraphState(nodesData) {
     nodesData.forEach(node => {
       this.state.addOrUpdateNode(node);
     });
+  }
 
-    // 2. Reconcile the state with the Three.js scene
+  // 2. Reconcile the scene: create new meshes or update existing ones based on the GraphState.
+  reconcileSceneMeshes() {
     const allNodes = this.state.getAllNodes();
-    let routerMesh = this.getNodeById("router");
+    const routerMesh = this.getNodeById("router");
 
     allNodes.forEach(nodeState => {
       let mesh = this.nodeRegistry.get(nodeState.id);
 
       if (!mesh) {
-        // If no mesh exists, pick an initial position if not already set
+        // Set an initial position if one isn’t already set.
         if (!nodeState.position && nodeState.layer !== "web") {
           if (nodeState.type === "router") {
             nodeState.position = new THREE.Vector3(0, 0, 0);
@@ -52,61 +60,55 @@ export class NodesManager {
             );
           }
         }
-        // Create a new Three.js mesh for this node
+        // Create a new mesh for the node.
         mesh = createNodeMesh(nodeState);
         this.scene.add(mesh);
         this.nodeRegistry.set(nodeState.id, mesh);
       } else {
-        // Update existing mesh userData
+        // Update existing mesh's userData and properties.
         Object.assign(mesh.userData, nodeState);
-        // For non-web nodes, update position from state
         if (nodeState.layer !== "web" && nodeState.position) {
           mesh.position.copy(nodeState.position);
         }
-        // Update color
         mesh.material.color.set(
           nodeState.color || (nodeState.type === "external" ? "red" : (nodeState.layer === "web" ? "#ff69b4" : "#0099FF"))
         );
-        
       }
-      // Update overlays
+      
+      // Update overlays.
       overlayManager.updateOverlays(mesh);
-          // After updating overlays, add:
+
+      // Spawn child nodes for open ports if necessary.
       if (mesh.userData.ports && mesh.userData.ports.length > 0) {
-        // Only spawn port moons if one of them isn’t already a child of this node.
         if (!mesh.getObjectByName(`${mesh.userData.id}-port-${mesh.userData.ports[0]}`)) {
           this.spawnChildNodes(mesh, mesh.userData.ports);
         }
       }
-          
-          
     });
+  }
 
-
-    // 3. Build d3-format arrays for the PhysicsEngine
-    //    a) Array of nodes
+  // 3. Update or create the PhysicsEngine with current nodes and links.
+  updatePhysicsEngine(edgesData) {
     const d3Nodes = [];
     this.nodeRegistry.forEach((mesh, id) => {
-      // Skip port moons (child nodes) from the physics simulation.
+      // Skip child nodes from the physics simulation.
       if (mesh.userData.type === "child") return;
       d3Nodes.push({ id: id });
     });
-
-    //    b) Array of links
     const d3Links = (edgesData || []).map(edge => ({
       source: edge.source,
       target: edge.target
     }));
 
-    // 4. Create or update the PhysicsEngine
     if (!this.physicsEngine) {
       this.physicsEngine = new PhysicsEngine(d3Nodes, d3Links, this.nodeRegistry);
     } else {
       this.physicsEngine.updateGraph(d3Nodes, d3Links);
     }
   }
+
   removeChildNodesForPorts(parentNode) {
-    // Iterate over all children of the parent and remove those whose names start with the parent's id + "-port-"
+    // Remove child nodes whose names start with the parent's id followed by "-port-"
     const childrenToRemove = [];
     parentNode.children.forEach(child => {
       if (child.name && child.name.startsWith(`${parentNode.userData.id}-port-`)) {
@@ -118,10 +120,11 @@ export class NodesManager {
       this.nodeRegistry.delete(child.userData.id);
     });
   }
+
   spawnChildNodes(parentNode, openPorts) {
-    // Remove any existing port moons.
+    // Remove any existing port moons before creating new ones.
     this.removeChildNodesForPorts(parentNode);
-  
+
     console.log(`Spawning child nodes for ${parentNode.userData.id} with ports:`, openPorts);
     const orbitRadius = 40;  // Adjust as needed.
     const numPorts = openPorts.length;
@@ -134,13 +137,11 @@ export class NodesManager {
         Math.sin(angle) * orbitRadius,
         0
       );
-      // Use the larger sphere geometry
       const geometry = new THREE.SphereGeometry(5, 16, 16);
       const material = new THREE.MeshBasicMaterial({ color: 0xaaaaaa });
       const childMesh = new THREE.Mesh(geometry, material);
       childMesh.position.copy(offset);
       
-      // Set a unique name for removal later:
       childMesh.name = `${parentNode.userData.id}-port-${port}`;
       childMesh.userData = {
         id: `${parentNode.userData.id}-port-${port}`,
@@ -150,15 +151,13 @@ export class NodesManager {
         parentId: parentNode.userData.id,
       };
       
-      // Parent the child mesh to the parent node
       parentNode.add(childMesh);
       this.nodeRegistry.set(childMesh.userData.id, childMesh);
     });
     
-    // Update parent's ports property
+    // Update parent's ports property.
     parentNode.userData.ports = openPorts;
   }
-  
 
   getNodesArray() {
     return Array.from(this.nodeRegistry.values());

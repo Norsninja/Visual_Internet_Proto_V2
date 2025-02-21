@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+#You must start the 'neo4j desktop' program first, or suffer a ServiceUnavialable error
+#If this is the first run of the DB with nothing stored uncomment out the line in db.py: self.init_constraints()  # Uncomment to run once if needed
+# next open a new terminal and run: npm run dev
+# go to the url
 import threading
 from flask import Flask
 from flask_cors import CORS

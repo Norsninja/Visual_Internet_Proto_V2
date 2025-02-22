@@ -109,22 +109,27 @@ def scapy_port_scan(ip, start_port=20, end_port=1024, timeout=2):
     return open_ports
 
 def get_asn_info(ip):
-    """Fetch ASN and ISP information using the BGPView API."""
+    """Fetch ASN and ISP information using the BGPView API, returning a dict."""
     try:
+        # For private networks, return a dict indicating it's private.
         if ip.startswith(("10.", "172.16.", "192.168.")):
-            return "Private Network"
+            return {"asn": None, "holder": "Private Network"}
         url = f"https://api.bgpview.io/ip/{ip}"
         response = requests.get(url, timeout=5)
         if response.status_code == 200:
             data = response.json()
-            asn = data["data"].get("asn", "Unknown ASN")
-            isp = data["data"].get("isp", "Unknown ISP")
-            return f"ASN {asn} ({isp})" if asn != "Unknown ASN" else "Unknown"
+            asn = data["data"].get("asn")
+            isp = data["data"].get("isp")
+            if asn:
+                return {"asn": asn, "holder": isp or "Unknown ISP"}
+            else:
+                return None
         else:
-            return "Unknown"
+            return None
     except Exception as e:
         logging.error("Error getting ASN info for %s: %s", ip, e)
-        return "Unknown"
+        return None
+
 
 def get_mac(ip):
     """Retrieve the MAC address for a local network device with retry limits."""

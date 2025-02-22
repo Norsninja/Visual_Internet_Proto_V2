@@ -7,7 +7,7 @@ import threading
 from flask import Flask
 from flask_cors import CORS
 from db import run_scheduled_tasks
-from scanners import start_packet_capture
+from traffic_monitor import start_packet_capture
 from routes import register_routes
 from db import db
 

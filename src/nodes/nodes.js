@@ -31,10 +31,15 @@ export class NodesManager {
   reconcileSceneMeshes() {
     const allNodes = this.state.getAllNodes();
     const routerMesh = this.getNodeById("router");
-
+  
     allNodes.forEach(nodeState => {
+      // Skip rendering nodes that are scans.
+      if (nodeState.type && nodeState.type.toLowerCase().startsWith("scan")) {
+        return;
+      }
+  
       let mesh = this.nodeRegistry.get(nodeState.id);
-
+  
       if (!mesh) {
         // Set an initial position if one isn’t already set.
         if (!nodeState.position && nodeState.layer !== "web") {
@@ -77,7 +82,7 @@ export class NodesManager {
       
       // Update overlays.
       overlayManager.updateOverlays(mesh);
-
+  
       // Spawn child nodes for open ports if necessary.
       if (mesh.userData.ports && mesh.userData.ports.length > 0) {
         if (!mesh.getObjectByName(`${mesh.userData.id}-port-${mesh.userData.ports[0]}`)) {
@@ -86,6 +91,7 @@ export class NodesManager {
       }
     });
   }
+  
 
   // 3. Update or create the PhysicsEngine with current nodes and links.
   updatePhysicsEngine(edgesData) {

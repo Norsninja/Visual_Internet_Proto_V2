@@ -63,7 +63,7 @@ export class PhysicsEngine {
 
       .force('center', forceCenter(0, 0, 0).strength(0.01))
       .force('z', forceZ(0).strength(0.01))
-      .force('collision', forceCollide().radius(5).strength(0.9))
+      .force('collision', forceCollide().radius(5).strength(0.2))
       // Add our custom attraction force for ASN nodes
       .force('attractASN', forceAttractASN())
       .alphaDecay(0.001);

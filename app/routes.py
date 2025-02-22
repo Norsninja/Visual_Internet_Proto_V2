@@ -13,6 +13,8 @@ from web_scanner import fetch_website_metadata, extract_hyperlinks
 import threading
 import requests
 from bgp_scanner import scan_asn 
+from labeling import generate_node_label
+from traffic_monitor import traffic_data  # Import the global traffic_data deque
 
 def immediate_traceroute_update(new_target):
     hops = run_traceroute(target=new_target)
@@ -84,12 +86,17 @@ def register_routes(app):
         except Exception as e:
             logging.error(f"Error fetching full graph: {e}")
             return jsonify({"error": "Failed to retrieve graph"}), 500
-        
+            
     @app.route('/network', methods=['GET'])
     def get_network():
         try:
             query = """
-            MATCH (n) WHERE n:NetworkNode OR n:WebNode OR n:ASNNode
+            MATCH (n) 
+            WHERE (n:NetworkNode OR n:WebNode OR n:ASNNode)
+            AND NOT (n.id STARTS WITH 'bgpscan-' OR
+                    n.id STARTS WITH 'portscan-' OR
+                    n.id STARTS WITH 'sslscan-' OR
+                    n.id STARTS WITH 'webscan-')
             OPTIONAL MATCH (n)-[r]->(m)
             RETURN n, r, m
             """
@@ -98,12 +105,25 @@ def register_routes(app):
                 nodes = {}
                 edges = []
                 for record in result:
-                    node = dict(record["n"])
+                    node_obj = record["n"]
+                    node = dict(node_obj)
+                    node_id = node.get("id")
+                    if not node_id:
+                        node_id = node_obj.id  # fallback to internal id
+                    # Ensure node_id is a string
+                    node["id"] = str(node_id)
                     nodes[node["id"]] = node
                     if record["r"]:
+                        start_node = record["r"].start_node
+                        end_node = record["r"].end_node
+                        source_id = start_node.get("id", start_node.id)
+                        target_id = end_node.get("id", end_node.id)
+                        # Force relationship node ids to be strings
+                        source_id = str(source_id)
+                        target_id = str(target_id)
                         edges.append({
-                            "source": record["r"].start_node["id"],
-                            "target": record["r"].end_node["id"],
+                            "source": source_id,
+                            "target": target_id,
                             "type": record["r"].type,
                             "properties": dict(record["r"])
                         })
@@ -111,6 +131,7 @@ def register_routes(app):
         except Exception as e:
             logging.error(f"Error fetching network data: {e}")
             return jsonify({"error": "Failed to retrieve network data"}), 500
+
 
     
     @app.route('/scan_ports', methods=['GET'])
@@ -128,26 +149,75 @@ def register_routes(app):
         except Exception as e:
             logging.error("Error scanning ports for %s: %s", ip, e)
             return jsonify({'error': str(e)}), 500
-    
+            
     @app.route('/traffic', methods=['GET'])
     def get_traffic():
-        """Retrieve network traffic data from Neo4j."""
         try:
+            # 1. Retrieve stored traffic from Neo4j (including protocol & size)
             query = """
-            MATCH (a)-[t:CONNECTED_TO]->(b)
-            RETURN a.id AS source, b.id AS target, t.timestamp AS last_seen
+            MATCH (src)-[t:TRAFFIC]->(dst)
+            RETURN src.id AS source, dst.id AS target, t.proto AS protocol, t.size AS packet_size, t.timestamp AS last_seen
             """
             with db.driver.session() as session:
                 result = session.run(query)
-                traffic_data = [
-                    {"src": record["source"], "dst": record["target"], "last_seen": record["last_seen"]}
+                stored_traffic = [
+                    {
+                        "src": record["source"],
+                        "dst": record["target"],
+                        "proto": record["protocol"],
+                        "size": record["packet_size"],
+                        "last_seen": record["last_seen"]
+                    }
                     for record in result
                 ]
-            return jsonify(traffic_data)
+
+            # 2. Retrieve recent in-memory traffic
+            recent_traffic = list(traffic_data)
+
+            # 3. Merge stored and real-time traffic
+            traffic_dict = {}
+
+            # Add stored traffic
+            for entry in stored_traffic:
+                key = (entry["src"], entry["dst"])
+                traffic_dict[key] = {
+                    "src": entry["src"],
+                    "dst": entry["dst"],
+                    "proto": entry["proto"],
+                    "size": entry["size"],
+                    "last_seen": entry["last_seen"]
+                }
+
+            # Add real-time traffic (overwrite if more recent)
+            for entry in recent_traffic:
+                key = (entry["src"], entry["dst"])
+                if key in traffic_dict:
+                    traffic_dict[key]["last_seen"] = max(traffic_dict[key]["last_seen"], entry["timestamp"])
+                else:
+                    traffic_dict[key] = {
+                        "src": entry["src"],
+                        "dst": entry["dst"],
+                        "proto": entry["proto"],
+                        "size": entry["size"],
+                        "last_seen": entry["timestamp"]
+                    }
+
+            # 4. Prepare response
+            response = {
+                "traffic": list(traffic_dict.values())
+            }
+
+            # 5. Log the output for verification
+            logging.info(f"Traffic data returned: {len(response['traffic'])} entries")
+
+            return jsonify(response)
 
         except Exception as e:
             logging.error(f"Error retrieving traffic data: {e}")
             return jsonify({"error": "Failed to retrieve traffic data"}), 500
+
+
+
     
     @app.route('/set_external_target', methods=['POST'])
     def set_external_target():
@@ -189,6 +259,13 @@ def register_routes(app):
             logging.error(f"Error calculating traffic rate: {e}")
             return jsonify({"error": "Failed to retrieve traffic rate"}), 500
 
+    def ensure_asn_to_target_connection(asn, target, timestamp):
+        """
+        Create a relationship between the ASN node (identified by f"AS{asn}")
+        and the target node (target IP) using the 'HOSTS' relationship.
+        """
+        asn_node_id = f"AS{asn}"
+        db.create_asn_network_relationship(asn_node_id, target, "HOSTS", {"timestamp": timestamp})
 
     @app.route('/bgp_scan', methods=['GET'])
     def bgp_scan():
@@ -205,22 +282,22 @@ def register_routes(app):
         if 'error' in results:
             return jsonify(results), 404
 
-        asn_info = results['asn']  # e.g., {'asn': 15169, 'holder': 'GOOGLE'} or {'asn': 30081, 'holder': 'CACHENETWORKS'}
+        asn_info = results['asn']  # e.g., {'asn': 15169, 'holder': 'GOOGLE'}
         peers = results.get('peers', [])
         prefixes = results.get('prefixes', [])
 
         # Upsert the ASN node (merging prefixes and peers)
         db.upsert_asn_node(asn_info, prefixes, peers)
 
-        # Optionally, for each prefix, create or update a NetworkNode and create an "ANNOUNCES" relationship
+        # For each prefix, upsert a NetworkNode and create an "ANNOUNCES" relationship
         for prefix in prefixes:
             network_node = {
                 "id": prefix,
-                "label": f"Prefix {prefix}",
-                "type": "network",
+                "type": "prefix",  # using "prefix" type for these nodes
                 "last_seen": time.time(),
                 "color": "#0099FF"
             }
+            network_node["label"] = generate_node_label(network_node)
             db.upsert_network_node(network_node)
             db.create_asn_network_relationship(f"AS{asn_info['asn']}", prefix, "ANNOUNCES", {"timestamp": time.time()})
         
@@ -228,6 +305,9 @@ def register_routes(app):
         for peer in peers:
             db.upsert_asn_node({'asn': peer, 'holder': "Unknown"})
             db.create_asn_network_relationship(f"AS{asn_info['asn']}", f"AS{peer}", "BGP_PEER", {"timestamp": time.time()})
+        
+        # Explicitly create a relationship between the ASN node and the target node
+        ensure_asn_to_target_connection(asn_info['asn'], target, time.time())
         
         # Store the BGP scan as a separate scan node and link it to the network node
         db.store_bgp_scan(target, results)
@@ -240,6 +320,7 @@ def register_routes(app):
                 "peers": peers
             }
         })
+
             
     @app.route('/web_scan', methods=['GET'])
     def web_scan():
@@ -282,20 +363,23 @@ def register_routes(app):
             })
 
 
-        # Ensure the NetworkNode (IP) exists in the database
+        # In /web_scan route
         if not db.get_node_by_id(ip):
-            db.upsert_network_node({
+            node_data = {
                 "id": ip,
-                "label": "Scanned Node",
-                "type": "device",
+                "type": "device",  # assuming scanned IPs are treated as devices initially
                 "mac_address": "Unknown",
                 "role": "Scanned Device",
                 "last_seen": time.time()
-            })
+            }
+            node_data["label"] = generate_node_label(node_data)
+            db.upsert_network_node(node_data)
 
-        # Ensure the WebNode exists in the database before creating a relationship
+
+        # For the web node created for the scanned website
         web_node = {
             "id": metadata["url"],
+            "type": "web",
             "url": metadata["url"],
             "title": metadata.get("title", "Unknown"),
             "description": metadata.get("description", "Unknown"),
@@ -305,26 +389,19 @@ def register_routes(app):
             "port": port,
             "color": "#FF69B4",
             "last_seen": time.time(),
-            "parentId": ip,
-            "type": "web" 
+            "parentId": ip
         }
+        web_node["label"] = generate_node_label(web_node)
         db.upsert_web_node(web_node)
+
 
         # Now safely create the HOSTS relationship
         if db.get_node_by_id(metadata["url"]):
             db.create_relationship(ip, metadata["url"], "HOSTS", {"port": port, "layer": "web"})
 
         # ✅ Ensure only one scan record is created
-        scan_id = f"webscan-{ip}-{int(time.time())}"
-        query_scan = """
-        MERGE (s:Scan:WebScan {id: $scan_id})
-        SET s.target = $ip, s.timestamp = $timestamp
-        WITH s
-        MATCH (n:NetworkNode {id: $ip})
-        CREATE (s)-[:RESULTS_IN]->(n)
-        """
-        with db.driver.session() as session:
-            session.run(query_scan, scan_id=scan_id, ip=ip, timestamp=time.time())
+        db.store_scan("webscan", ip, {}, extra_labels=["WebScan"])
+
         # After storing the scan record, update the node with a scanned flag.
         query_update_node = """
         MATCH (n:NetworkNode {id: $ip})

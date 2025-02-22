@@ -115,7 +115,12 @@ async function fetchTrafficData(nodesManager, edgesManager) {
   try {
     const response = await fetch('http://192.168.0.11:5000/traffic');
     if (!response.ok) throw new Error(`Traffic data fetch failed: ${response.status}`);
-    const trafficData = await response.json();
+    const trafficResponse = await response.json();
+    const trafficData = trafficResponse.traffic; // ✅ Extract the traffic array
+    
+    if (!Array.isArray(trafficData)) {
+      throw new Error("Traffic data is not an array");
+    }
     
     trafficData.forEach(({ src, dst, size }) => {
       const packetSize = size || 10;

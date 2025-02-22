@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Ultrasonic Radar Sensor</title>
+    <style>
+      body { margin: 0; overflow: hidden; }
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <!-- Include three.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+      // Set up the basic scene, camera, and renderer
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+      camera.position.z = 50;
+      
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+      
+      // Group to hold all ring sensors
+      const ringGroup = new THREE.Group();
+      scene.add(ringGroup);
+      
+      // Parameters for rings
+      const ringLifetime = 10000; // 10 seconds lifetime
+      const fetchInterval = 5000; // Fetch every 5 seconds
+      
+      // Array to store active rings with metadata
+      let rings = [];
+      
+      // Function to create a ring based on traffic intensity
+      function createRing(intensity) {
+        // Map intensity (0-1) to ring color/opacity. Adjust as needed.
+        const color = new THREE.Color(0xff0000); // red base color
+        const material = new THREE.MeshBasicMaterial({
+          color: color,
+          transparent: true,
+          opacity: intensity, // starting opacity based on intensity
+          side: THREE.DoubleSide,
+        });
+        // Create a ring geometry: inner radius 0, outer radius proportional to intensity
+        const outerRadius = 2; // base ring size; could be scaled if desired
+        const geometry = new THREE.RingGeometry(outerRadius, outerRadius + 1, 32);
+        const ringMesh = new THREE.Mesh(geometry, material);
+        ringMesh.position.set(0, 0, 0);
+        
+        // Add timestamp for lifetime management
+        ringMesh.userData = { createdAt: performance.now(), intensity: intensity };
+        ringGroup.add(ringMesh);
+        rings.push(ringMesh);
+      }
+      
+      // Function to fetch traffic data from /traffic endpoint and compute an intensity metric
+      async function fetchTrafficData() {
+        try {
+          const response = await fetch('http://192.168.0.11:5000/traffic');
+          const data = await response.json();
+          // Example: aggregate the total number of packets in this interval
+          let totalPackets = data.traffic.length;
+          // Normalize the intensity. Adjust the divisor based on expected volume.
+          let intensity = Math.min(totalPackets / 100, 1); // clamp between 0 and 1
+          console.log(`Fetched ${totalPackets} packets; intensity: ${intensity}`);
+          // Create a ring using the computed intensity
+          createRing(intensity);
+        } catch (error) {
+          console.error("Error fetching traffic data:", error);
+        }
+      }
+      
+      // Set up periodic fetching
+      setInterval(fetchTrafficData, fetchInterval);
+      
+      // Animation loop: update rings and remove old ones
+      function animate() {
+        requestAnimationFrame(animate);
+        const now = performance.now();
+        
+        // Update each ring: expand and fade out over its lifetime
+        rings.forEach((ring, index) => {
+          const age = now - ring.userData.createdAt;
+          // Increase the scale (simulate outward expansion)
+          const scaleFactor = 1 + age / ringLifetime;
+          ring.scale.set(scaleFactor, scaleFactor, 1);
+          // Fade out the opacity over time
+          const newOpacity = THREE.MathUtils.clamp(1 - age / ringLifetime, 0, 1) * ring.userData.intensity;
+          ring.material.opacity = newOpacity;
+        });
+        
+        // Remove rings that have exceeded their lifetime
+        rings = rings.filter(ring => {
+          if (now - ring.userData.createdAt > ringLifetime) {
+            ringGroup.remove(ring);
+            return false;
+          }
+          return true;
+        });
+        
+        renderer.render(scene, camera);
+      }
+      
+      animate();
+      
+      // Handle window resize
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    </script>
+  </body>
+</html>

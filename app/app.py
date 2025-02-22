@@ -6,7 +6,7 @@
 import threading
 from flask import Flask
 from flask_cors import CORS
-from db import run_scheduled_tasks
+import orchestrator
 from traffic_monitor import start_packet_capture
 from routes import register_routes
 from db import db
@@ -19,6 +19,6 @@ register_routes(app)
 if __name__ == '__main__':
     db.initialize_graph()  # Ensure gateway is initialized immediately
     threading.Thread(target=start_packet_capture, daemon=True).start()
-    threading.Thread(target=run_scheduled_tasks, daemon=True).start()
+    threading.Thread(target=orchestrator.schedule_full_scan, daemon=True).start()
 
     app.run(host='0.0.0.0', port=5000)

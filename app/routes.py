@@ -321,7 +321,6 @@ def register_routes(app):
             }
         })
 
-            
     @app.route('/web_scan', methods=['GET'])
     def web_scan():
         """
@@ -333,7 +332,7 @@ def register_routes(app):
         if not ip or not port:
             return jsonify({'error': 'Missing IP or Port parameter'}), 400
 
-        # Fetch metadata and hyperlinks
+        # Fetch metadata and hyperlinks.
         try:
             metadata = fetch_website_metadata(ip, port)
         except Exception as e:
@@ -346,28 +345,21 @@ def register_routes(app):
             logging.error(f"Hyperlink extraction failed for {ip}:{port}: {e}")
             links_data = {}
 
-
         if "error" in metadata or "error" in links_data:
             logging.warning(f"Web scan error for {ip}:{port}: metadata={metadata}, links={links_data}")
-            # Optionally, you might update your node to indicate that the scan failed, e.g.:
             query_update_node = """
-            MATCH (n:NetworkNode {id: $ip})
-            SET n.webScan = false, n.web_scanned = true
+                MATCH (n:NetworkNode {id: $ip})
+                SET n.webScan = false, n.web_scanned = true
             """
             with db.driver.session() as session:
                 session.run(query_update_node, ip=ip)
-            return jsonify({
-                "status": "success",
-                "metadata": {},
-                "links": []
-            })
+            return jsonify({"status": "success", "metadata": {}, "links": []})
 
-
-        # In /web_scan route
+        # Ensure the network node for 'ip' exists.
         if not db.get_node_by_id(ip):
             node_data = {
                 "id": ip,
-                "type": "device",  # assuming scanned IPs are treated as devices initially
+                "type": "device",  # Assuming scanned IPs are treated as devices initially.
                 "mac_address": "Unknown",
                 "role": "Scanned Device",
                 "last_seen": time.time()
@@ -375,9 +367,8 @@ def register_routes(app):
             node_data["label"] = generate_node_label(node_data)
             db.upsert_network_node(node_data)
 
-
-        # For the web node created for the scanned website
-        web_node = {
+        # Upsert the web node for the scanned website.
+        scanned_web_node = {
             "id": metadata["url"],
             "type": "web",
             "url": metadata["url"],
@@ -389,34 +380,33 @@ def register_routes(app):
             "port": port,
             "color": "#FF69B4",
             "last_seen": time.time(),
-            "parentId": ip
+            "parentId": ip  # The website is a child of the scanned network node.
         }
-        web_node["label"] = generate_node_label(web_node)
-        db.upsert_web_node(web_node)
+        scanned_web_node["label"] = generate_node_label(scanned_web_node)
+        db.upsert_web_node(scanned_web_node)
 
-
-        # Now safely create the HOSTS relationship
+        # Create the HOSTS relationship from the network node to the scanned website.
         if db.get_node_by_id(metadata["url"]):
             db.create_relationship(ip, metadata["url"], "HOSTS", {"port": port, "layer": "web"})
 
-        # ✅ Ensure only one scan record is created
+        # Ensure only one scan record is created.
         db.store_scan("webscan", ip, {}, extra_labels=["WebScan"])
 
-        # After storing the scan record, update the node with a scanned flag.
+        # After storing the scan record, update the network node with scanned flags.
         query_update_node = """
-        MATCH (n:NetworkNode {id: $ip})
-        SET n.webScan = true, n.web_scanned = true
+            MATCH (n:NetworkNode {id: $ip})
+            SET n.webScan = true, n.web_scanned = true
         """
         with db.driver.session() as session:
             session.run(query_update_node, ip=ip)
 
-        # Process each hyperlink from the scan
+        # Process each hyperlink from the scan.
         for link in links_data.get("links", []):
             link_url = link["url"]
             resolved_ip = link.get("resolved_ip")
 
-            # Ensure the WebNode exists for the hyperlink
-            db.upsert_web_node({
+            # Upsert the hyperlink as a WebNode with its parent set to the scanned website.
+            hyperlink_node = {
                 "id": link_url,
                 "url": link_url,
                 "title": "Unknown",
@@ -426,19 +416,21 @@ def register_routes(app):
                 "port": None,
                 "color": "#FF69B4",
                 "last_seen": time.time(),
-                "parentId": ip # metadata["url"]  
-            })
+                "parentId": metadata["url"]  # Link is now a child of the scanned website.
+            }
+            hyperlink_node["label"] = generate_node_label(hyperlink_node)
+            db.upsert_web_node(hyperlink_node)
 
-            # ✅ Prevent missing relationships by delaying Neo4j commits
+            # Delay slightly to prevent missing relationships.
             time.sleep(0.05)
 
-            # Now create the WEB_LINK relationship (ensuring both nodes exist)
-            if db.get_node_by_id(ip) and db.get_node_by_id(link_url):
-                db.create_relationship(ip, link_url, "WEB_LINK", {"type": link["type"], "layer": "web"})
+            # Create the WEB_LINK relationship from the scanned website node to the hyperlink.
+            if db.get_node_by_id(metadata["url"]) and db.get_node_by_id(link_url):
+                db.create_relationship(metadata["url"], link_url, "WEB_LINK", {"type": link["type"], "layer": "web"})
             else:
                 logging.warning(f"⚠️ Skipping WEB_LINK: One or both nodes missing -> {metadata['url']} ↔ {link_url}")
 
-            # If the link is external and resolves to a valid IP, store as a network node
+            # If the link is external and resolves to a valid IP, upsert a network node and create a DISCOVERED relationship.
             if link.get("type") == "external" and resolved_ip:
                 db.upsert_network_node({
                     "id": resolved_ip,
@@ -448,14 +440,12 @@ def register_routes(app):
                     "role": "External Node",
                     "last_seen": time.time()
                 })
-
-                # Ensure relationship is only created if both nodes exist
                 if db.get_node_by_id(resolved_ip):
-                    db.create_relationship(ip, resolved_ip, "DISCOVERED", {"source": "web_scan"})
+                    # Create relationship from the scanned website node to the external network node.
+                    db.create_relationship(metadata["url"], resolved_ip, "DISCOVERED", {"source": "web_scan"})
 
         return jsonify({
             "status": "success",
             "metadata": metadata,
             "links": links_data.get("links", [])
         })
-

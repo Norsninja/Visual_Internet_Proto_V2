@@ -16,7 +16,7 @@ class Neo4jDB:
     recently_seen_nodes = {}          
     def __init__(self, uri=NEO4J_URI, user=NEO4J_USER, password=NEO4J_PASSWORD):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
-        # self.init_constraints()  # Uncomment to run once if needed
+        self.init_constraints()  # Uncomment to run once if needed
 
     def close(self):
         self.driver.close()
@@ -505,97 +505,123 @@ class Neo4jDB:
         # ✅ Ensure `CONNECTED_TO` relationships are also created
         self.create_relationship(actual_src, actual_dst, "CONNECTED_TO", {"timestamp": timestamp})
 
-
-
-    def update_graph_data():
-        """Scheduled update for network data, runs every 10 seconds."""
+    def update_graph_with_data(self, data):
+        """
+        Persist structured local scan data into Neo4j.
+        
+        Expected payload structure:
+        - data["router"]: dict with router node data.
+        - data["devices"]: list of device node data.
+        - data["traceroute_nodes"]: list of nodes from traceroute.
+        - data["traceroute_relationships"]: list of relationships from traceroute.
+        """
         now = time.time()
-        local_ip = get_local_ip()
-        gateway_ip = get_gateway()
-
-        if gateway_ip == "Unknown":
-            logging.error("Gateway IP could not be determined, skipping update.")
-            return
-
-        existing_router = db.get_node_by_id(gateway_ip)
-        if existing_router and "open_external_port" in existing_router:
-            open_external_port = existing_router["open_external_port"]
-        else:
-            external_ports = scapy_port_scan(gateway_ip, start_port=20, end_port=1024)
-            open_external_port = external_ports[0] if external_ports else None
-
-        # Create router node data with type "router"
-        router_node = {
-            "id": gateway_ip,
-            "type": "router",
-            "mac_address": get_mac(gateway_ip),
-            "role": "Router",
-            "color": "orange",  # Router nodes are orange
-            "last_seen": now,
-            "public_ip": get_public_ip(),
-            "open_external_port": open_external_port
-        }
-        # The upsert will call generate_node_label internally.
-        db.upsert_network_node(router_node)
-        logging.info(f"Router node updated: {router_node}")
-
-        # Process Local Devices (from ARP Scan)
-        devices = run_arp_scan()
-        local_subnet = get_local_subnet()
-        for device in devices:
-            if device not in (local_ip, gateway_ip):
-                is_local = local_subnet and device.startswith(local_subnet)
-                node_dict = {
-                    "id": device,
-                    "type": "device" if is_local else "external",
-                    "mac_address": get_mac(device),
-                    "role": "Unknown Device" if is_local else "External Node",
-                    "color": "#0099FF" if is_local else "red",  # Local devices are blue; external, red
-                    "last_seen": now
-                }
-                db.upsert_network_node(node_dict)
-                db.create_relationship(gateway_ip, device, "CONNECTED_TO", {"timestamp": now})
-
-        # Synchronize External Target from Config stored in Neo4j
-        external_target_config = db.get_config_value("external_target")
-        if not external_target_config:
-            external_target_config = external_target  # Fallback to default from config.py
-            db.set_config_value("external_target", external_target_config)
-
-        # Process External Nodes (Traceroute Hops)
-        traceroute_hops = run_traceroute(target=external_target_config)
-        prev_hop = gateway_ip
-        for hop in traceroute_hops:
-            hop_ip = hop["ip"] if isinstance(hop, dict) and "ip" in hop else hop
-            if hop_ip != gateway_ip:
-                node_dict = {
-                    "id": hop_ip,
-                    "type": "external",
-                    "mac_address": "Unavailable (External)",
-                    "role": "External Node",
-                    "color": "red",  # External nodes are red
-                    "last_seen": now,
-                    "tracerouted": (hop_ip == external_target_config)
-                }
-                # Optionally include ASN info if available (only after a BGP scan)
-                asn_info = get_asn_info(hop_ip)
-                if asn_info:
-                    node_dict["asn_info"] = asn_info
-                db.upsert_network_node(node_dict)
-                db.create_relationship(prev_hop, hop_ip, "TRACEROUTE_HOP", {"timestamp": now, "traceroute_mode": "local"})
-                prev_hop = hop_ip
-
-        logging.info("Graph data successfully updated.")
-
-    # Schedule update to run every 10 seconds
-    schedule.every(10).seconds.do(update_graph_data)
+        
+        # 1. Update Router Node
+        self.upsert_network_node(data["router"])
+        
+        # 2. Update Local Devices and create CONNECTED_TO relationships.
+        for device in data["devices"]:
+            self.upsert_network_node(device)
+            self.create_relationship(data["router"]["id"], device["id"], "CONNECTED_TO", {"timestamp": now})
+        
+        # 3. Process Traceroute Nodes and Relationships.
+        for node in data["traceroute_nodes"]:
+            self.upsert_network_node(node)
+        for rel in data["traceroute_relationships"]:
+            self.create_relationship(rel["source"], rel["target"], rel["type"], rel["properties"])
 
 
-def run_scheduled_tasks():
-    """Continuously run scheduled tasks (used in app.py)."""
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+
+#     def update_graph_data():
+#         """Scheduled update for network data, runs every 10 seconds."""
+#         now = time.time()
+#         local_ip = get_local_ip()
+#         gateway_ip = get_gateway()
+
+#         if gateway_ip == "Unknown":
+#             logging.error("Gateway IP could not be determined, skipping update.")
+#             return
+
+#         existing_router = db.get_node_by_id(gateway_ip)
+#         if existing_router and "open_external_port" in existing_router:
+#             open_external_port = existing_router["open_external_port"]
+#         else:
+#             external_ports = scapy_port_scan(gateway_ip, start_port=20, end_port=1024)
+#             open_external_port = external_ports[0] if external_ports else None
+
+#         # Create router node data with type "router"
+#         router_node = {
+#             "id": gateway_ip,
+#             "type": "router",
+#             "mac_address": get_mac(gateway_ip),
+#             "role": "Router",
+#             "color": "orange",  # Router nodes are orange
+#             "last_seen": now,
+#             "public_ip": get_public_ip(),
+#             "open_external_port": open_external_port
+#         }
+#         # The upsert will call generate_node_label internally.
+#         db.upsert_network_node(router_node)
+#         logging.info(f"Router node updated: {router_node}")
+
+#         # Process Local Devices (from ARP Scan)
+#         devices = run_arp_scan()
+#         local_subnet = get_local_subnet()
+#         for device in devices:
+#             if device not in (local_ip, gateway_ip):
+#                 is_local = local_subnet and device.startswith(local_subnet)
+#                 node_dict = {
+#                     "id": device,
+#                     "type": "device" if is_local else "external",
+#                     "mac_address": get_mac(device),
+#                     "role": "Unknown Device" if is_local else "External Node",
+#                     "color": "#0099FF" if is_local else "red",  # Local devices are blue; external, red
+#                     "last_seen": now
+#                 }
+#                 db.upsert_network_node(node_dict)
+#                 db.create_relationship(gateway_ip, device, "CONNECTED_TO", {"timestamp": now})
+
+#         # Synchronize External Target from Config stored in Neo4j
+#         external_target_config = db.get_config_value("external_target")
+#         if not external_target_config:
+#             external_target_config = external_target  # Fallback to default from config.py
+#             db.set_config_value("external_target", external_target_config)
+
+#         # Process External Nodes (Traceroute Hops)
+#         traceroute_hops = run_traceroute(target=external_target_config)
+#         prev_hop = gateway_ip
+#         for hop in traceroute_hops:
+#             hop_ip = hop["ip"] if isinstance(hop, dict) and "ip" in hop else hop
+#             if hop_ip != gateway_ip:
+#                 node_dict = {
+#                     "id": hop_ip,
+#                     "type": "external",
+#                     "mac_address": "Unavailable (External)",
+#                     "role": "External Node",
+#                     "color": "red",  # External nodes are red
+#                     "last_seen": now,
+#                     "tracerouted": (hop_ip == external_target_config)
+#                 }
+#                 # Optionally include ASN info if available (only after a BGP scan)
+#                 asn_info = get_asn_info(hop_ip)
+#                 if asn_info:
+#                     node_dict["asn_info"] = asn_info
+#                 db.upsert_network_node(node_dict)
+#                 db.create_relationship(prev_hop, hop_ip, "TRACEROUTE_HOP", {"timestamp": now, "traceroute_mode": "local"})
+#                 prev_hop = hop_ip
+
+#         logging.info("Graph data successfully updated.")
+
+#     # Schedule update to run every 10 seconds
+#     schedule.every(10).seconds.do(update_graph_data)
+
+
+# def run_scheduled_tasks():
+#     """Continuously run scheduled tasks (used in app.py)."""
+#     while True:
+#         schedule.run_pending()
+#         time.sleep(1)
 
 # Initialize the Neo4j database instance
 db = Neo4jDB()

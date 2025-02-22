@@ -3,6 +3,23 @@
 This is the **new version of VIP**, now built on a **Neo4j graph database**. The original version was built using SQL and can be found here:  
 [**Original Visual Internet Prototype**](https://github.com/Norsninja/Visual_Internet_Prototype).
 
+### **Changes 2/22/25:**
+- **Decoupled Scanning & Persistence:**
+The scanning functions (e.g., ARP, traceroute) have been separated from database updates. An orchestrator module now gathers and preprocesses network data, packaging it into structured payloads for persistence in Neo4j. This modular approach simplifies maintenance and testing.
+
+- **Improved Concurrency Management:**
+A global lock has been introduced to prevent overlapping scans—particularly for long-running traceroute operations—ensuring each full scan completes without race conditions.
+
+- **Focused Local Scanning:**
+The scheduled full scan now exclusively handles local network data (router info, ARP scans, and traceroute hops) while preserving on-demand scans for BGP, web, remote traceroute, and port scans. This means external scans are triggered only via user requests, exactly as before.
+
+- **Dynamic External Target Synchronization:**
+The system now retrieves the external target configuration from the Neo4j database (with a fallback to a default value) before running traceroutes. This guarantees that traceroute operations always use the most up-to-date target.
+
+- **Consistent Labeling & Relationship Management:**
+Node labeling and relationship creation are now centralized via dedicated functions, ensuring that all nodes (routers, devices, external nodes, etc.) and relationships (e.g., CONNECTED_TO, TRACEROUTE_HOP) are created and maintained consistently throughout the system.
+
+
 ---
 
 ## **About This Project**

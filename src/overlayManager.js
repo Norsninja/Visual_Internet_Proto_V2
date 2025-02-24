@@ -7,11 +7,11 @@ export function addOverlays(node) {
     // Define torus overlay parameters
     const overlays = [
         {
-            // This overlay represents port scans (yellow)
+            // This overlay represents port scans (blue)
             name: "portScanOverlay",
             radius: 25 * 1.5,  // Slightly larger than node for port scan
             tubeRadius: 0.1,
-            color: 0xffff00,  // Yellow for port scanned
+            color: 0x0000ff,  // blue for port scanned
             condition: node.userData.scanned_ports || (node.userData.ports && node.userData.ports.length > 0)
         },
         {
@@ -29,6 +29,14 @@ export function addOverlays(node) {
             tubeRadius: 0.15,
             color: 0x00ff00,  // Green for tracerouted
             condition: node.userData.tracerouted
+        },
+        {
+            // This overlay represents BGP (yellow)
+            name: "bgpscanOverlay",
+            radius: 40 * 1.5,  // Larger than scanned overlay
+            tubeRadius: 0.15,
+            color: 0xffff00,  // Yellow for BGP
+            condition: node.userData.bgp_scanned
         }
     ];
 
@@ -54,7 +62,7 @@ export function addOverlays(node) {
 
 // ✅ Function to remove both overlays before updating
 export function removeOverlays(node) {
-    ["portScanOverlay", "webScanOverlay", "tracerouteOverlay"].forEach(name => {
+    ["portScanOverlay", "webScanOverlay", "tracerouteOverlay","bgpscanOverlay"].forEach(name => {
         const existingRing = node.getObjectByName(name);
         if (existingRing) node.remove(existingRing);
     });

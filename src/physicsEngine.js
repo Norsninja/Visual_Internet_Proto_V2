@@ -54,7 +54,7 @@ export class PhysicsEngine {
     //    - Collide keeps nodes from overlapping
     //    - alphaDecay is lower, so it won’t freeze too quickly
     this.simulation = forceSimulation(this.nodes)
-      .force('charge', forceManyBody().strength(d => d.id.startsWith("AS") ? -50 : -400))
+      .force('charge', forceManyBody().strength(d => d.id.startsWith("AS") ? 0 : -400))
       .force('link', forceLink(this.links)
         .id(d => d.id)
         .distance(d => (String(d.source.id).startsWith("AS") ? 200 : 100)) // Access ID properly

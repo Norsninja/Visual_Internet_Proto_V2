@@ -14,76 +14,105 @@ export class UIManager {
     this.infoBox.addEventListener("mouseenter", (e) => e.stopPropagation());
     document.body.appendChild(this.infoBox);
   }
+  async showInfo(node, event) {
+      const data = node.userData;
+      const ipRegex = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 
-  showInfo(node, event) {
-    const data = node.userData;
-    const ipRegex = /^(?:\d{1,3}\.){3}\d{1,3}$/;
-
-    // Determine which buttons should appear
-    const scanButtonHtml = (data.id && data.id.match(ipRegex) && data.type !== "ship")
-      ? `<button id="portScanButton">Scan Ports</button>` : "";
-    const travelButtonHtml = (data.type !== "ship")
-      ? `<button id="travelButton">Travel</button>` : "";
-    let webScanButtonHtml = "";
-    if (data.ports && data.ports.length > 0) {
-      // Only add a web scan button if port 80 or 443 is open
-      const webPorts = data.ports.filter(port => port === 80 || port === 443);
-      if (webPorts.length > 0) {
-        webScanButtonHtml = `<button id="webScanButton">Run Web Scan</button>`;
+      // Determine which buttons should appear
+      const scanButtonHtml = (data.id && data.id.match(ipRegex) && data.type !== "ship")
+        ? `<button id="portScanButton">Scan Ports</button>` : "";
+      const travelButtonHtml = (data.type !== "ship")
+        ? `<button id="travelButton">Travel</button>` : "";
+      let webScanButtonHtml = "";
+      if (data.ports && data.ports.length > 0) {
+        const webPorts = data.ports.filter(port => port === 80 || port === 443);
+        if (webPorts.length > 0) {
+          webScanButtonHtml = `<button id="webScanButton">Run Web Scan</button>`;
+        }
       }
-    }
 
-    // Build the main HTML content
-    let html = `
-      <strong>${data.label || "Unknown"}</strong><br>
-      IP: ${data.id || "N/A"}<br>
-      MAC: ${data.mac || "N/A"}<br>
-      Role: ${data.role || "N/A"}<br>
-      ${scanButtonHtml}
-      ${travelButtonHtml}
-      ${webScanButtonHtml}
-      <div id="scanResults"></div>
-      <div id="tracerouteResults"></div>
-      <div id="webScanResults"></div>
-    `;
-
-    // For router nodes with an external port, add extra controls
-    if (data.type === "router" && data.open_external_port) {
-      html += this.generateRouterControls();
-    }
-
-    // For network/external nodes, add the BGP scan button and container
-    if ((data.type === "network" || data.type === "external") && data.id) {
-      html += `
-        <button id="bgpScanButton">Run BGP Scan</button>
-        <div id="bgpScanResults"></div>
+      // Build the main HTML content
+      let html = `
+        <strong>${data.label || "Unknown"}</strong><br>
+        IP: ${data.id || "N/A"}<br>
+        MAC: ${data.mac || "N/A"}<br>
+        Role: ${data.role || "N/A"}<br>
+        ${scanButtonHtml}
+        ${travelButtonHtml}
+        ${webScanButtonHtml}
+        <div id="scanResults">Loading scan data...</div>
+        <div id="tracerouteResults"></div>
+        <div id="webScanResults"></div>
       `;
-    }
 
-    // For port nodes, add advanced port scan options
-    if (data.port) {
-      html += `
-        <br><strong>Advanced Port Scans:</strong><br>
-        <button id="bannerGrabButton">Banner Grab</button>
-        <button id="cveLookupButton">Check CVE</button>
-        <button id="reverseDNSButton">Reverse DNS</button>
-        <button id="sslInfoButton">SSL Info</button>
-        <div id="advancedScanResults"></div>
-      `;
-    }
+      // For router nodes with an external port, add extra controls
+      if (data.type === "router" && data.open_external_port) {
+        html += this.generateRouterControls();
+      }
 
-    // For external nodes, add a traceroute button
-    if (data.type === "external") {
-      html += `<button id="tracerouteButton">Run Remote Traceroute</button>`;
-    }
+      // For network/external nodes, add the BGP scan button and container
+      if ((data.type === "network" || data.type === "external") && data.id) {
+        html += `
+          <button id="bgpScanButton">Run BGP Scan</button>
+          <div id="bgpScanResults"></div>
+        `;
+      }
 
-    this.infoBox.innerHTML = html;
+      // For port nodes, add advanced port scan options
+      if (data.port) {
+        html += `
+          <br><strong>Advanced Port Scans:</strong><br>
+          <button id="bannerGrabButton">Banner Grab</button>
+          <button id="cveLookupButton">Check CVE</button>
+          <button id="reverseDNSButton">Reverse DNS</button>
+          <button id="sslInfoButton">SSL Info</button>
+          <div id="advancedScanResults"></div>
+        `;
+      }
 
-    // Bind event listeners in modular helper methods
-    this.bindCommonEvents(node, data, { scanButtonHtml, travelButtonHtml, webScanButtonHtml });
-    this.positionInfoBox(node);
-    this.infoBox.style.display = "block";
+      // For external nodes, add a traceroute button
+      if (data.type === "external") {
+        html += `<button id="tracerouteButton">Run Remote Traceroute</button>`;
+      }
+
+      this.infoBox.innerHTML = html;
+
+      // Bind event listeners in modular helper methods
+      this.bindCommonEvents(node, data, { scanButtonHtml, travelButtonHtml, webScanButtonHtml });
+      this.positionInfoBox(node);
+      this.infoBox.style.display = "block";
+
+      // ✅ Fetch scan data dynamically
+      const scanData = await window.networkManager.fetchAndDisplayScanData(data.id);
+
+      const scanResultsDiv = document.getElementById("scanResults");
+      if (!scanResultsDiv) return;
+
+      if (scanData.error) {
+          scanResultsDiv.innerHTML = `<br><strong>Error fetching scan data:</strong> ${scanData.error}`;
+          return;
+      }
+
+      if (scanData.length === 0) {
+          scanResultsDiv.innerHTML = `<br><strong>No scans found.</strong>`;
+          return;
+      }
+
+      // Format and display scan results
+      let scanHtml = `<br><strong>Scan Results:</strong><br>`;
+      scanData.forEach(scan => {
+          scanHtml += `<div style="margin-top:5px; padding:5px; border:1px solid white;">`;
+          scanHtml += `<strong>Type:</strong> ${scan.type}<br>`;
+          if (scan.ports) scanHtml += `<strong>Ports:</strong> ${scan.ports.join(", ")}<br>`;
+          if (scan.issuer) scanHtml += `<strong>SSL Issuer:</strong> ${scan.issuer}<br>`;
+          if (scan.asn) scanHtml += `<strong>ASN:</strong> ${scan.asn} (${scan.holder || "Unknown"})<br>`;
+          scanHtml += `<strong>Timestamp:</strong> ${new Date(scan.timestamp * 1000).toLocaleString()}<br>`;
+          scanHtml += `</div>`;
+      });
+
+      scanResultsDiv.innerHTML = scanHtml;
   }
+
 
   generateRouterControls() {
     return `

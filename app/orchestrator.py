@@ -154,7 +154,7 @@ def perform_full_scan():
         scan_lock.release()
 
 
-def schedule_full_scan(interval=10):
+def schedule_full_scan(interval=100):
     """Continuously schedule full scans with a fixed interval."""
     while True:
         perform_full_scan()

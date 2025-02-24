@@ -6,8 +6,11 @@ export class NetworkManager {
     this.nodesManager = nodesManager;
     this.edgesManager = edgesManager;
     this.endpoint = endpoint;
+    this.trafficCallbacks = [];
   }
-
+  registerTrafficCallback(cb) {
+    this.trafficCallbacks.push(cb);
+  }
   async fetchNetworkData(attempt = 0) {
     try {
       const response = await fetch(`${this.endpoint}/network`);
@@ -37,7 +40,41 @@ export class NetworkManager {
     this.fetchNetworkData(); // initial call
     setInterval(() => this.fetchNetworkData(), intervalMs);
   }
+  async fetchAndDisplayScanData(targetIp) {
+    try {
+        const response = await fetch(`${this.endpoint}/get_scan_data?target_ip=${targetIp}`);
+        const result = await response.json();
 
+        if (result.error) {
+            console.error("Error fetching scan data:", result.error);
+            return { error: result.error };
+        }
+
+        return result.scans || [];
+    } catch (error) {
+        console.error("Error fetching scan data:", error);
+        return { error: "Failed to fetch scan data." };
+    }
+}  
+  // NEW: Method for fetching sensor traffic data for the TrafficMeter
+  async fetchTrafficSensorData() {
+    try {
+      const response = await fetch(`${this.endpoint}/traffic`);
+      if (!response.ok) throw new Error(`Traffic sensor fetch failed: ${response.status}`);
+      const data = await response.json(); // expecting data.traffic to be an array
+
+      // Call all registered traffic callbacks with the fetched data
+      this.trafficCallbacks.forEach(cb => cb(data));
+    } catch (error) {
+      console.error("Error fetching traffic sensor data:", error);
+    }
+  }
+
+  // NEW: Start periodic sensor updates
+  startTrafficSensorUpdates(intervalMs = 5000) {
+    this.fetchTrafficSensorData(); // initial call
+    setInterval(() => this.fetchTrafficSensorData(), intervalMs);
+  }
   async fetchTracerouteData(targetIP, forceNew = false) {
     let url = `${this.endpoint}/remote_traceroute?target=${targetIP}`;
     if (forceNew) url += "&nocache=true";

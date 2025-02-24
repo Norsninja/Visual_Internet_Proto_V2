@@ -3,7 +3,18 @@
 This is the **new version of VIP**, now built on a **Neo4j graph database**. The original version was built using SQL and can be found here:  
 [**Original Visual Internet Prototype**](https://github.com/Norsninja/Visual_Internet_Prototype).
 
-### **Changes 2/22/25:**
+### **Changes for 2/24/25:**
+- added a local network traffic meter. this shows the traffic on the local network, and the rate of change over time. Thanks Calc 1
+- removed the testing files for the traffic_meter
+- added a retrieve relationship endpoint to routes.py
+- modified the camera and ship so you can fly around
+- I'm testing procedurally generating nodes based on their network data using Cellular Automata. if you run index.html in the ca_test folder you can view different NetworkNodes from the db
+- Completing all the required scans for a node reveals it's true appearance, for now a green material
+- **Issues:**
+- I still have issues with web nodes and web edges not correctly attaching after a web_scan
+- the organization of the nodes could be better. all of the external networks that the local computers are connected to create a lot of nodes that look like an Ooort cloud
+
+## **Changes 2/22/25:**
 - **Decoupled Scanning & Persistence:**
 The scanning functions (e.g., ARP, traceroute) have been separated from database updates. An orchestrator module now gathers and preprocesses network data, packaging it into structured payloads for persistence in Neo4j. This modular approach simplifies maintenance and testing.
 

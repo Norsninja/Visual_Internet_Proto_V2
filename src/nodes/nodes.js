@@ -31,66 +31,72 @@ export class NodesManager {
   reconcileSceneMeshes() {
     const allNodes = this.state.getAllNodes();
     const routerMesh = this.getNodeById("router");
-  
+
     allNodes.forEach(nodeState => {
-      // Skip rendering nodes that are scans.
-      if (nodeState.type && nodeState.type.toLowerCase().startsWith("scan")) {
-        return;
-      }
-  
-      let mesh = this.nodeRegistry.get(nodeState.id);
-  
-      if (!mesh) {
-        // Set an initial position if one isn’t already set.
-        if (!nodeState.position && nodeState.layer !== "web") {
-          if (nodeState.type === "router") {
-            nodeState.position = new THREE.Vector3(0, 0, 0);
-          } else if (nodeState.type === "device" && routerMesh) {
-            let angle = Math.random() * Math.PI * 2;
-            let radius = 30 + Math.random() * 20;
-            let zOffset = (Math.random() - 0.5) * 20;
-            nodeState.position = new THREE.Vector3(
-              routerMesh.position.x + radius * Math.cos(angle),
-              routerMesh.position.y + radius * Math.sin(angle),
-              routerMesh.position.z + zOffset
-            );
-          } else {
-            let angle = Math.random() * Math.PI * 2;
-            let radius = 100 + Math.random() * 50;
-            let zOffset = (Math.random() - 0.5) * 50;
-            nodeState.position = new THREE.Vector3(
-              radius * Math.cos(angle),
-              radius * Math.sin(angle),
-              routerMesh ? routerMesh.position.z + zOffset : zOffset
-            );
-          }
+        if (nodeState.type && nodeState.type.toLowerCase().startsWith("scan")) {
+            return;
         }
-        // Create a new mesh for the node.
-        mesh = createNodeMesh(nodeState);
-        this.scene.add(mesh);
-        this.nodeRegistry.set(nodeState.id, mesh);
-      } else {
-        // Update existing mesh's userData and properties.
-        Object.assign(mesh.userData, nodeState);
-        if (nodeState.layer !== "web" && nodeState.position) {
-          mesh.position.copy(nodeState.position);
+
+        let mesh = this.nodeRegistry.get(nodeState.id);
+
+        if (!mesh) {
+            if (!nodeState.position && nodeState.layer !== "web") {
+                if (nodeState.type === "router") {
+                    nodeState.position = new THREE.Vector3(0, 0, 0);
+                } else if (nodeState.type === "device" && routerMesh) {
+                    let angle = Math.random() * Math.PI * 2;
+                    let radius = 30 + Math.random() * 20;
+                    let zOffset = (Math.random() - 0.5) * 20;
+                    nodeState.position = new THREE.Vector3(
+                        routerMesh.position.x + radius * Math.cos(angle),
+                        routerMesh.position.y + radius * Math.sin(angle),
+                        routerMesh.position.z + zOffset
+                    );
+                } else {
+                    let angle = Math.random() * Math.PI * 2;
+                    let radius = 100 + Math.random() * 50;
+                    let zOffset = (Math.random() - 0.5) * 50;
+                    nodeState.position = new THREE.Vector3(
+                        radius * Math.cos(angle),
+                        radius * Math.sin(angle),
+                        routerMesh ? routerMesh.position.z + zOffset : zOffset
+                    );
+                }
+            }
+
+            // Create a new mesh
+            mesh = createNodeMesh(nodeState);
+            this.scene.add(mesh);
+            this.nodeRegistry.set(nodeState.id, mesh);
+        } else {
+            // Update existing mesh's userData and properties.
+            Object.assign(mesh.userData, nodeState);
+            if (nodeState.layer !== "web" && nodeState.position) {
+                mesh.position.copy(nodeState.position);
+            }
         }
-        mesh.material.color.set(
-          nodeState.color || (nodeState.type === "external" ? "red" : (nodeState.layer === "web" ? "#ff69b4" : "#0099FF"))
-        );
-      }
-      
-      // Update overlays.
-      overlayManager.updateOverlays(mesh);
-  
-      // Spawn child nodes for open ports if necessary.
-      if (mesh.userData.ports && mesh.userData.ports.length > 0) {
-        if (!mesh.getObjectByName(`${mesh.userData.id}-port-${mesh.userData.ports[0]}`)) {
-          this.spawnChildNodes(mesh, mesh.userData.ports);
+
+        // ✅ Update material based on scan completion status
+        if (nodeState.fully_scanned) {
+            mesh.material.color.set("#00FF00"); // Fully scanned nodes turn green
+            mesh.material.emissive.set("#008000"); // Add some emissive glow
+            mesh.material.emissiveIntensity = 0.5;
+        } else {
+            mesh.material.color.set(nodeState.color || (nodeState.type === "external" ? "red" : "#0099FF"));
         }
-      }
+
+        // Update overlays.
+        overlayManager.updateOverlays(mesh);
+
+        // Spawn child nodes for open ports if necessary.
+        if (mesh.userData.ports && mesh.userData.ports.length > 0) {
+            if (!mesh.getObjectByName(`${mesh.userData.id}-port-${mesh.userData.ports[0]}`)) {
+                this.spawnChildNodes(mesh, mesh.userData.ports);
+            }
+        }
     });
-  }
+}
+
   
 
   // 3. Update or create the PhysicsEngine with current nodes and links.

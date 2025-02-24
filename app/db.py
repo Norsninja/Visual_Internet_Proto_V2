@@ -16,7 +16,7 @@ class Neo4jDB:
     recently_seen_nodes = {}          
     def __init__(self, uri=NEO4J_URI, user=NEO4J_USER, password=NEO4J_PASSWORD):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
-        self.init_constraints()  # Uncomment to run once if needed
+        # self.init_constraints()  # Uncomment to run once if needed
 
     def close(self):
         self.driver.close()
@@ -116,7 +116,8 @@ class Neo4jDB:
 
     def store_bgp_scan(self, target, bgp_data):
         """
-        Refactored function to store a BGP scan using the centralized store_scan function.
+        Stores a BGP scan in Neo4j and updates related nodes efficiently,
+        ensuring no duplicate BGP scan is added.
         """
         properties = {
             "asn": bgp_data['asn']['asn'],
@@ -124,21 +125,42 @@ class Neo4jDB:
             "prefixes": bgp_data.get('prefixes', []),
             "peers": bgp_data.get('peers', [])
         }
+
+        # ✅ Step 1: Store scan only if it does not already exist
         scan_id = self.store_scan("bgpscan", target, properties, extra_labels=["BGPScan"])
-        
+        if not scan_id:
+            return  # ✅ Prevents redundant work if the scan already exists
+
         print(f"Stored BGP scan for {target}: {bgp_data}")
-        
-        # For each prefix, upsert a NetworkNode and create an "ANNOUNCES" relationship.
+
+        # ✅ Step 2: Set `bgp_scanned = true` on the target NetworkNode
+        query_update_node = """
+            MATCH (n:NetworkNode {id: $target})
+            SET n.bgp_scanned = true
+        """
+        with self.driver.session() as session:
+            session.run(query_update_node, target=target)
+
+        # ✅ Step 3: Batch process prefixes
+        prefix_nodes = []
+        prefix_relationships = []
         for prefix in bgp_data.get('prefixes', []):
-            node_data = {
+            prefix_nodes.append({
                 "id": prefix,
                 "type": "prefix",
                 "last_seen": time.time(),
-                "color": "#0099FF"
-            }
-            node_data["label"] = generate_node_label(node_data)
-            self.upsert_network_node(node_data)
-            self.create_asn_network_relationship(f"AS{bgp_data['asn']['asn']}", prefix, "ANNOUNCES", {"timestamp": time.time()})
+                "color": "#0099FF",
+                "label": generate_node_label({"id": prefix, "type": "prefix"})
+            })
+            prefix_relationships.append((f"AS{bgp_data['asn']['asn']}", prefix, "ANNOUNCES", {"timestamp": time.time()}))
+
+        for node in prefix_nodes:
+            self.upsert_network_node(node)
+
+        for asn_id, prefix, rel_type, props in prefix_relationships:
+            self.create_asn_network_relationship(asn_id, prefix, rel_type, props)
+
+
 
 
 
@@ -189,48 +211,108 @@ class Neo4jDB:
 
     def store_scan(self, scan_type, target, additional_properties, extra_labels=None):
         """
-        Centralized function to store any type of scan.
+        Centralized function to store any type of scan, ensuring duplicates are not added.
         
-        :param scan_type: A string identifier for the scan type (e.g., "portscan", "bgpscan", "sslscan", "webscan")
+        :param scan_type: A string identifier for the scan type (e.g., "portscan", "bgpscan", "sslscan", "webscan").
         :param target: The target IP address that was scanned.
-        :param additional_properties: A dict of scan-specific properties (e.g., ports, prefixes, peers, etc.)
-        :param extra_labels: A list of extra labels to add to the scan node (e.g., ["PortScan"] or ["BGPScan"])
-        :return: The generated scan_id.
+        :param additional_properties: A dict of scan-specific properties (e.g., ports, prefixes, peers, etc.).
+        :param extra_labels: A list of extra labels to add to the scan node (e.g., ["PortScan"] or ["BGPScan"]).
+        :return: The scan_id if a new scan is created, or None if a scan already exists.
         """
         if extra_labels is None:
             extra_labels = []
-        
-        # 1. Generate a unique scan ID
+
+        # ✅ Step 1: Check if a scan of this type already exists for the target
+        query_check = """
+        MATCH (s:Scan)-[:RESULTS_IN]->(n:NetworkNode {id: $target})
+        WHERE s.type = $scan_type
+        RETURN s.id AS scan_id
+        """
+        with self.driver.session() as session:
+            result = session.run(query_check, scan_type=scan_type, target=target)
+            existing_scan = result.single()
+
+        if existing_scan:
+            print(f"⚠️ Skipping duplicate scan: {scan_type} already exists for {target}")
+            return None  # ✅ Prevent duplicate scan creation
+
+        # ✅ Step 2: Generate a unique scan ID
         scan_id = f"{scan_type}-{target}-{int(time.time())}"
-        
-        # 2. Construct the scan node dictionary with common properties
+
+        # ✅ Step 3: Construct the scan node dictionary
         scan_node = {
             "id": scan_id,
-            "type": scan_type,  # stored scan type
+            "type": scan_type,
             "target": target,
             "timestamp": time.time()
         }
         scan_node.update(additional_properties)
-        
-        # 3. Generate a label using your centralized labeling function.
-        # (If you want to customize this further for scan nodes, you could extend your NODE_LABEL_FORMATS.)
+
+        # ✅ Step 4: Generate a label using a centralized function
         scan_node["label"] = generate_node_label(scan_node)
-        
-        # 4. Build a string for extra labels (e.g., ":PortScan" if extra_labels contains "PortScan")
+
+        # ✅ Step 5: Build query for inserting the scan
         extra_label_str = "".join(f":{label}" for label in extra_labels)
-        
-        # 5. Upsert the scan node using a MERGE query that includes both "Scan" and the extra labels
+
         query_scan = f"""
         MERGE (s:Scan{extra_label_str} {{id: $scan_id}})
         SET s += $scan_node
         """
+
+        # ✅ Step 6: Insert the scan and create the relationship
         with self.driver.session() as session:
             session.run(query_scan, scan_id=scan_id, scan_node=scan_node)
-        
-        # 6. Create the relationship between the scan node and the target network node
+
         self.create_scan_relationship(scan_id, target)
         
-        return scan_id
+        # ✅ Step 7: Update the node’s scan completion status
+        self.update_scan_status(target, scan_type)
+
+        return scan_id  # ✅ Return the scan_id if a new scan was created
+
+        
+    def update_scan_status(self, target_ip, scan_type):
+        """
+        Updates the scan completion status of a NetworkNode.
+        If all required scans are complete, mark the node as `fully_scanned`.
+
+        - If a port scan has been completed and no web ports (80, 443) exist, `webscan` is no longer required.
+        - If a port scan has not been completed, assume `webscan` might still be needed.
+        """
+        required_scans = self.get_config_value("required_scans") or []
+
+        # ✅ Step 1: Retrieve existing scan completions and open ports
+        query = """
+        MATCH (n:NetworkNode {id: $target_ip})
+        RETURN n.ports AS ports, n.scans_completed AS scans_completed
+        """
+        with self.driver.session() as session:
+            result = session.run(query, target_ip=target_ip)
+            record = result.single()
+
+        if not record:
+            return  # No node found, exit early
+
+        ports = record["ports"] or []  # ✅ Get open ports (if they exist)
+        scans_completed = record["scans_completed"] or []  # ✅ Get completed scans
+
+        # ✅ Step 2: Check if port scan was completed
+        portscan_completed = "portscan" in scans_completed
+
+        # ✅ Step 3: If a port scan has been completed but no web ports exist, remove `webscan`
+        if portscan_completed and not any(port in [80, 443] for port in ports):
+            required_scans = [scan for scan in required_scans if scan != "webscan"]
+
+        # ✅ Step 4: Update the node’s scan completion status
+        query_update = """
+        MATCH (n:NetworkNode {id: $target_ip})
+        SET n.scans_completed = COALESCE(n.scans_completed, []) + $scan_type
+        WITH n, $required_scans AS required
+        SET n.fully_scanned = size(n.scans_completed) = size(required)
+        """
+        with self.driver.session() as session:
+            session.run(query_update, target_ip=target_ip, scan_type=scan_type, required_scans=required_scans)
+
     
     def store_traceroute(self, target_ip, hops, traceroute_mode="local"):
         if not hops:
@@ -379,8 +461,9 @@ class Neo4jDB:
 
 
     def initialize_graph(self):
-        """Ensure default gateway exists on startup."""
+        """Ensure default gateway exists on startup and set required scans in Config."""
         gateway_ip = get_gateway() or "192.168.1.1"
+        
         if not self.get_node_by_id(gateway_ip):
             node_data = {
                 "id": gateway_ip,
@@ -393,6 +476,12 @@ class Neo4jDB:
             node_data["label"] = generate_node_label(node_data)
             self.upsert_network_node(node_data)
             logging.info("Created default gateway node on startup")
+
+        # Set required scans in Config node
+        if not self.get_config_value("required_scans"):
+            self.set_config_value("required_scans", ["portscan", "bgpscan", "webscan"])
+            logging.info("Initialized required scans in Config node")
+
 
 
     def load_past_traceroutes(self):

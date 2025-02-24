@@ -8,6 +8,7 @@ import { EdgesManager } from './edges.js';
 import { UIManager } from './ui.js';
 import { EventsManager } from './events.js';
 import { NetworkManager } from './network.js';
+import { TrafficMeter } from './ui/traffic_meter.js';
 
 // Create a new Tween Group (avoiding a global TWEEN)
 const tweenGroup = new Group();
@@ -25,7 +26,7 @@ renderer.debug.checkShaderErrors = true;
 const sceneManager = new SceneManager(window.camera);
 window.sceneManager = sceneManager;
 const scene = sceneManager.scene;
-
+window.scene = scene;
 // Now create the ship AFTER scene is defined
 const ship = new Ship(tweenGroup);
 scene.add(ship.getMesh());
@@ -51,13 +52,23 @@ window.eventsManager = eventsManager;
 const networkManager = new NetworkManager(nodesManager, edgesManager);
 window.networkManager = networkManager;
 networkManager.startPeriodicUpdates(10000);
+networkManager.startTrafficSensorUpdates(5000);
 edgesManager.pollTrafficRate();
 
 window.uiManager = uiManager;
 window.maxTravelDistance = 500;
 window.nodesManager = nodesManager;
 window.edgesManager = edgesManager;
+// Global key state manager
+window.keyStates = {};
 
+document.addEventListener('keydown', (event) => {
+  window.keyStates[event.code] = true;
+});
+
+document.addEventListener('keyup', (event) => {
+  window.keyStates[event.code] = false;
+});
 // Main render loop: We no longer call nodesManager.updateNodes here, as networkManager handles periodic updates
 function animate(time) {
   requestAnimationFrame(animate);
@@ -85,5 +96,7 @@ function animate(time) {
   edgesManager.updateTraffic();
 
   renderer.render(scene, window.camera);
+  ship.updateCockpitControls(delta)
 }
 animate();
+TrafficMeter();

@@ -48,54 +48,51 @@ export function createNodeMesh(nodeState) {
   const seed = hashIP(nodeState.id);
   const scale = window.NODE_SCALE || 1;
   let geometry;
-  
-  // Check if this is an ASN node based on its ID
+
   if (String(nodeState.id).startsWith("AS")) {
-    // For ASN nodes, create a much larger sphere geometry
-    geometry = new THREE.SphereGeometry(4 * scale, 32, 32);
+      geometry = new THREE.SphereGeometry(4 * scale, 32, 32);
   } else if (nodeState.layer === 'web') {
-    geometry = new THREE.SphereGeometry(1.5 * scale, 24, 24);
+      geometry = new THREE.SphereGeometry(1.5 * scale, 24, 24);
   } else {
-    geometry = generateDistortedGeometry(seed, nodeState.type, scale);
+      geometry = generateDistortedGeometry(seed, nodeState.type, scale);
   }
-  
-  // Determine the final color: ASN nodes will be yellow
+
   let finalColor;
   if (String(nodeState.id).startsWith("AS")) {
-    finalColor = new THREE.Color("#FFD700"); // Yellow for ASN nodes
+      finalColor = new THREE.Color("#FFD700"); // Yellow for ASN nodes
   } else if (nodeState.layer === 'web') {
-    finalColor = new THREE.Color("#ff69b4");
+      finalColor = new THREE.Color("#ff69b4");
+  } else if (nodeState.fully_scanned) {
+      finalColor = new THREE.Color("#00FF00"); // ✅ Fully scanned nodes are green
   } else {
-    finalColor = new THREE.Color(nodeState.color || (nodeState.type === "external" ? "red" : "#0099FF"));
+      finalColor = new THREE.Color(nodeState.color || (nodeState.type === "external" ? "red" : "#0099FF"));
   }
-  
+
   const material = generateMaterial(nodeState.type, finalColor, seed);
   const mesh = new THREE.Mesh(geometry, material);
-  
-  // Store the node state on the mesh.
+
   mesh.userData = { ...nodeState, seed };
-  
-  // Positioning: if it's a web node with a parent, position relative to the parent;
-  // otherwise, use the provided position if available.
+
   if (nodeState.layer === 'web' && nodeState.parentId) {
-    const parentMesh = window.nodesManager.getNodeById(nodeState.parentId);
-    if (parentMesh) {
-      const angle = Math.random() * Math.PI * 2;
-      const radius = (10 + Math.random() * 5) * scale;
-      const zOffset = (Math.random() - 0.5) * 10 * scale;
-      mesh.position.set(
-        parentMesh.position.x + radius * Math.cos(angle),
-        parentMesh.position.y + radius * Math.sin(angle),
-        parentMesh.position.z + zOffset
-      );
-    } else {
-      mesh.position.set(0, 0, 0);
-    }
+      const parentMesh = window.nodesManager.getNodeById(nodeState.parentId);
+      if (parentMesh) {
+          const angle = Math.random() * Math.PI * 2;
+          const radius = (10 + Math.random() * 5) * scale;
+          const zOffset = (Math.random() - 0.5) * 10 * scale;
+          mesh.position.set(
+              parentMesh.position.x + radius * Math.cos(angle),
+              parentMesh.position.y + radius * Math.sin(angle),
+              parentMesh.position.z + zOffset
+          );
+      } else {
+          mesh.position.set(0, 0, 0);
+      }
   } else if (nodeState.position) {
-    mesh.position.copy(nodeState.position);
+      mesh.position.copy(nodeState.position);
   }
-  
+
   return mesh;
 }
+
 
   

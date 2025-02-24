@@ -107,32 +107,46 @@ def register_routes(app):
                 for record in result:
                     node_obj = record["n"]
                     node = dict(node_obj)
+                    node["fully_scanned"] = node.get("fully_scanned", False)  #  Ensure `fully_scanned` is included
                     node_id = node.get("id")
                     if not node_id:
                         node_id = node_obj.id  # fallback to internal id
-                    # Ensure node_id is a string
-                    node["id"] = str(node_id)
+                    node["id"] = str(node_id)  # Ensure ID is a string
                     nodes[node["id"]] = node
+
                     if record["r"]:
                         start_node = record["r"].start_node
                         end_node = record["r"].end_node
-                        source_id = start_node.get("id", start_node.id)
-                        target_id = end_node.get("id", end_node.id)
-                        # Force relationship node ids to be strings
-                        source_id = str(source_id)
-                        target_id = str(target_id)
+                        source_id = str(start_node.get("id", start_node.id))
+                        target_id = str(end_node.get("id", end_node.id))
                         edges.append({
                             "source": source_id,
                             "target": target_id,
                             "type": record["r"].type,
                             "properties": dict(record["r"])
                         })
+
             return jsonify({"nodes": list(nodes.values()), "edges": edges})
+        
         except Exception as e:
             logging.error(f"Error fetching network data: {e}")
             return jsonify({"error": "Failed to retrieve network data"}), 500
 
+    @app.route('/get_scan_data', methods=['GET'])
+    def get_scan_data():
+        target_ip = request.args.get("target_ip")
+        if not target_ip:
+            return jsonify({"error": "Missing target IP"}), 400
 
+        query = """
+        MATCH (s:Scan)-[:RESULTS_IN]->(n:NetworkNode {id: $target_ip})
+        RETURN s
+        """
+        with db.driver.session() as session:
+            result = session.run(query, target_ip=target_ip)
+            scans = [dict(record["s"]) for record in result]
+
+        return jsonify({"target_ip": target_ip, "scans": scans})
     
     @app.route('/scan_ports', methods=['GET'])
     def scan_ports():
@@ -149,6 +163,33 @@ def register_routes(app):
         except Exception as e:
             logging.error("Error scanning ports for %s: %s", ip, e)
             return jsonify({'error': str(e)}), 500
+            
+    @app.route('/relationship_counts', methods=['GET'])
+    def relationship_counts():
+        target_ip = request.args.get("target_ip")
+        if not target_ip:
+            return jsonify({"error": "Missing target_ip parameter"}), 400
+
+        query = """
+        MATCH (n:NetworkNode {id: $target_ip})
+        OPTIONAL MATCH (n)-[r]-(m)
+        WHERE type(r) IN ['CONNECTED_TO', 'TRACEROUTE_HOP']
+        RETURN 
+        sum(CASE WHEN type(r) = 'CONNECTED_TO' THEN 1 ELSE 0 END) AS connected_to_count,
+        sum(CASE WHEN type(r) = 'TRACEROUTE_HOP' THEN 1 ELSE 0 END) AS traceroute_hop_count
+        """
+        with db.driver.session() as session:
+            result = session.run(query, target_ip=target_ip)
+            record = result.single()
+            connected_to_count = record["connected_to_count"] if record else 0
+            traceroute_hop_count = record["traceroute_hop_count"] if record else 0
+
+        return jsonify({
+            "target_ip": target_ip,
+            "connected_to_count": connected_to_count,
+            "traceroute_hop_count": traceroute_hop_count
+        })
+
             
     @app.route('/traffic', methods=['GET'])
     def get_traffic():
@@ -282,34 +323,45 @@ def register_routes(app):
         if 'error' in results:
             return jsonify(results), 404
 
-        asn_info = results['asn']  # e.g., {'asn': 15169, 'holder': 'GOOGLE'}
+        asn_info = results['asn']
         peers = results.get('peers', [])
         prefixes = results.get('prefixes', [])
 
-        # Upsert the ASN node (merging prefixes and peers)
+        # ✅ Upsert ASN node
         db.upsert_asn_node(asn_info, prefixes, peers)
 
-        # For each prefix, upsert a NetworkNode and create an "ANNOUNCES" relationship
+        # ✅ Process prefixes efficiently
+        prefix_nodes = []
+        prefix_relationships = []
         for prefix in prefixes:
-            network_node = {
+            prefix_nodes.append({
                 "id": prefix,
-                "type": "prefix",  # using "prefix" type for these nodes
+                "type": "prefix",
                 "last_seen": time.time(),
-                "color": "#0099FF"
-            }
-            network_node["label"] = generate_node_label(network_node)
-            db.upsert_network_node(network_node)
-            db.create_asn_network_relationship(f"AS{asn_info['asn']}", prefix, "ANNOUNCES", {"timestamp": time.time()})
-        
-        # For each peer, upsert that ASN node and create a "BGP_PEER" relationship
+                "color": "#0099FF",
+                "label": generate_node_label({"id": prefix, "type": "prefix"})
+            })
+            prefix_relationships.append((f"AS{asn_info['asn']}", prefix, "ANNOUNCES", {"timestamp": time.time()}))
+
+        for node in prefix_nodes:
+            db.upsert_network_node(node)
+
+        for asn_id, prefix, rel_type, props in prefix_relationships:
+            db.create_asn_network_relationship(asn_id, prefix, rel_type, props)
+
+        # ✅ Process ASN peer relationships efficiently
+        peer_relationships = []
         for peer in peers:
             db.upsert_asn_node({'asn': peer, 'holder': "Unknown"})
-            db.create_asn_network_relationship(f"AS{asn_info['asn']}", f"AS{peer}", "BGP_PEER", {"timestamp": time.time()})
-        
-        # Explicitly create a relationship between the ASN node and the target node
+            peer_relationships.append((f"AS{asn_info['asn']}", f"AS{peer}", "BGP_PEER", {"timestamp": time.time()}))
+
+        for asn_id, peer_id, rel_type, props in peer_relationships:
+            db.create_asn_network_relationship(asn_id, peer_id, rel_type, props)
+
+        # ✅ Explicitly create the ASN-to-target relationship
         ensure_asn_to_target_connection(asn_info['asn'], target, time.time())
-        
-        # Store the BGP scan as a separate scan node and link it to the network node
+
+        # ✅ Store the BGP scan (only if it does not exist)
         db.store_bgp_scan(target, results)
 
         return jsonify({
@@ -321,55 +373,46 @@ def register_routes(app):
             }
         })
 
+    
     @app.route('/web_scan', methods=['GET'])
     def web_scan():
-        """
-        Perform a web scan on a given network node.
-        Extracts metadata, hyperlinks, and stores WebNode relationships.
-        """
         ip = request.args.get('ip')
         port = request.args.get('port', type=int)
         if not ip or not port:
             return jsonify({'error': 'Missing IP or Port parameter'}), 400
 
-        # Fetch metadata and hyperlinks.
         try:
             metadata = fetch_website_metadata(ip, port)
-        except Exception as e:
-            logging.error(f"Metadata fetch failed for {ip}:{port}: {e}")
-            metadata = {}
-
-        try:
             links_data = extract_hyperlinks(ip, port)
         except Exception as e:
-            logging.error(f"Hyperlink extraction failed for {ip}:{port}: {e}")
-            links_data = {}
+            logging.error(f"Web scan failed for {ip}:{port}: {e}")
+            metadata, links_data = {}, {}
 
         if "error" in metadata or "error" in links_data:
             logging.warning(f"Web scan error for {ip}:{port}: metadata={metadata}, links={links_data}")
             query_update_node = """
                 MATCH (n:NetworkNode {id: $ip})
-                SET n.webScan = false, n.web_scanned = true
+                SET n.web_scanned = true
             """
             with db.driver.session() as session:
                 session.run(query_update_node, ip=ip)
-            return jsonify({"status": "success", "metadata": {}, "links": []})
+            return jsonify({"status": "error", "metadata": {}, "links": []})
 
-        # Ensure the network node for 'ip' exists.
-        if not db.get_node_by_id(ip):
-            node_data = {
-                "id": ip,
-                "type": "device",  # Assuming scanned IPs are treated as devices initially.
-                "mac_address": "Unknown",
-                "role": "Scanned Device",
-                "last_seen": time.time()
-            }
-            node_data["label"] = generate_node_label(node_data)
-            db.upsert_network_node(node_data)
+        # Ensure the network node exists
+        node_data = db.get_node_by_id(ip) or {
+            "id": ip,
+            "type": "device",
+            "mac_address": "Unknown",
+            "role": "Scanned Device",
+            "last_seen": time.time(),
+            "label": generate_node_label({"id": ip, "type": "device"})
+        }
+        db.upsert_network_node(node_data)
 
-        # Upsert the web node for the scanned website.
-        scanned_web_node = {
-            "id": metadata["url"],
+        # Ensure the web node for the scanned website exists
+        web_node_id = metadata["url"]
+        web_node = {
+            "id": web_node_id,
             "type": "web",
             "url": metadata["url"],
             "title": metadata.get("title", "Unknown"),
@@ -380,33 +423,40 @@ def register_routes(app):
             "port": port,
             "color": "#FF69B4",
             "last_seen": time.time(),
-            "parentId": ip  # The website is a child of the scanned network node.
+            "parentId": ip
         }
-        scanned_web_node["label"] = generate_node_label(scanned_web_node)
-        db.upsert_web_node(scanned_web_node)
+        db.upsert_web_node(web_node)
 
-        # Create the HOSTS relationship from the network node to the scanned website.
-        if db.get_node_by_id(metadata["url"]):
-            db.create_relationship(ip, metadata["url"], "HOSTS", {"port": port, "layer": "web"})
+        # ✅ Restore the HOSTS relationship between the scanned device and the web node
+        if db.get_node_by_id(web_node_id):
+            db.create_relationship(ip, web_node_id, "HOSTS", {"port": port, "layer": "web"})
 
-        # Ensure only one scan record is created.
-        db.store_scan("webscan", ip, {}, extra_labels=["WebScan"])
+        # Store the web scan with metadata
+        scan_properties = {
+            "url": metadata.get("url", f"http://{ip}:{port}"),
+            "status_code": metadata.get("status_code"),
+            "content_type": metadata.get("content_type"),
+            "server": metadata.get("server"),
+            "title": metadata.get("title", "Unknown"),
+            "description": metadata.get("description", "Unknown"),
+        }
+        db.store_scan("webscan", ip, scan_properties, extra_labels=["WebScan"])
 
-        # After storing the scan record, update the network node with scanned flags.
-        query_update_node = """
+        # ✅ Update the scanned status of the network node
+        query_update_node =  """
             MATCH (n:NetworkNode {id: $ip})
-            SET n.webScan = true, n.web_scanned = true
+            SET n.web_scanned = true
         """
         with db.driver.session() as session:
             session.run(query_update_node, ip=ip)
 
-        # Process each hyperlink from the scan.
+        # ✅ Restore WebNode-Hyperlink relationships
         for link in links_data.get("links", []):
             link_url = link["url"]
             resolved_ip = link.get("resolved_ip")
 
-            # Upsert the hyperlink as a WebNode with its parent set to the scanned website.
-            hyperlink_node = {
+            # Upsert hyperlink WebNode
+            db.upsert_web_node({
                 "id": link_url,
                 "url": link_url,
                 "title": "Unknown",
@@ -416,21 +466,17 @@ def register_routes(app):
                 "port": None,
                 "color": "#FF69B4",
                 "last_seen": time.time(),
-                "parentId": metadata["url"]  # Link is now a child of the scanned website.
-            }
-            hyperlink_node["label"] = generate_node_label(hyperlink_node)
-            db.upsert_web_node(hyperlink_node)
+                "parentId": metadata["url"]
+            })
 
-            # Delay slightly to prevent missing relationships.
-            time.sleep(0.05)
-
-            # Create the WEB_LINK relationship from the scanned website node to the hyperlink.
+            # ✅ Ensure WEB_LINK relationship is created
+            time.sleep(0.05)  # Helps with Neo4j consistency in batch inserts
             if db.get_node_by_id(metadata["url"]) and db.get_node_by_id(link_url):
                 db.create_relationship(metadata["url"], link_url, "WEB_LINK", {"type": link["type"], "layer": "web"})
             else:
-                logging.warning(f"⚠️ Skipping WEB_LINK: One or both nodes missing -> {metadata['url']} ↔ {link_url}")
+                logging.warning(f"⚠️ Skipping WEB_LINK: Missing nodes -> {metadata['url']} ↔ {link_url}")
 
-            # If the link is external and resolves to a valid IP, upsert a network node and create a DISCOVERED relationship.
+            # ✅ Ensure external discovered nodes are stored properly
             if link.get("type") == "external" and resolved_ip:
                 db.upsert_network_node({
                     "id": resolved_ip,
@@ -440,12 +486,13 @@ def register_routes(app):
                     "role": "External Node",
                     "last_seen": time.time()
                 })
+
+                # Ensure the DISCOVERED relationship is created
                 if db.get_node_by_id(resolved_ip):
-                    # Create relationship from the scanned website node to the external network node.
                     db.create_relationship(metadata["url"], resolved_ip, "DISCOVERED", {"source": "web_scan"})
 
-        return jsonify({
-            "status": "success",
-            "metadata": metadata,
-            "links": links_data.get("links", [])
-        })
+        return jsonify({"status": "success", "metadata": metadata, "links": links_data.get("links", [])})
+
+
+
+

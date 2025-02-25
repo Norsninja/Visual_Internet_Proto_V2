@@ -62,11 +62,11 @@ export class PhysicsEngine {
       )
 
       .force('center', forceCenter(0, 0, 0).strength(0.01))
-      .force('z', forceZ(0).strength(0.01))
+      .force('z', forceZ(0).strength(0.05))
       .force('collision', forceCollide().radius(5).strength(0.2))
       // Add our custom attraction force for ASN nodes
       .force('attractASN', forceAttractASN())
-      .alphaDecay(0.001);
+      .alphaDecay(0.002);
 
     // 3) Pin the router node if it exists
     this.pinRouter();
@@ -148,7 +148,7 @@ export class PhysicsEngine {
     const linksChanged = this.links.length !== prevLinkCount;
 
     // Reheat the simulation. If big changes, alpha=1; else small nudge with alpha=0.2
-    const newAlpha = (nodesChanged || linksChanged) ? 0.5 : 0.2;
+    const newAlpha = (nodesChanged || linksChanged) ? 0.1 : 0.1;
     this.simulation.alpha(newAlpha).restart();
   }
   

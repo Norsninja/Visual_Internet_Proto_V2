@@ -41,9 +41,9 @@ export class Ship {
   }
 
   loadShipModel() {
-    const loader = new GLTFLoader();
+    const shiploader = new GLTFLoader();
     const shipGroup = new THREE.Group(); // Placeholder until model loads.
-    loader.load('model/ship.glb', (gltf) => {
+    shiploader.load('model/ship.glb', (gltf) => {
       const shipModel = gltf.scene;
       shipModel.name = "Ship";
       shipModel.scale.set(2, 2, 2);

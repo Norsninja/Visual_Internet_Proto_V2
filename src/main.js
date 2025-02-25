@@ -5,7 +5,7 @@ import { Ship } from './ship.js';
 import { SceneManager } from './scene.js';
 import { NodesManager } from './nodes/nodes.js';
 import { EdgesManager } from './edges.js';
-import { UIManager } from './ui.js';
+import { UIManager } from './ui.jsx';
 import { EventsManager } from './events.js';
 import { NetworkManager } from './network.js';
 import { TrafficMeter } from './ui/traffic_meter.js';
@@ -18,6 +18,9 @@ window.NODE_SCALE = 15; // Increase nodes by a factor of 3 (adjust as needed)
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
+renderer.domElement.style.position = "absolute";
+renderer.domElement.style.top = "0px";
+renderer.domElement.style.left = "0px";
 
 // Debug renderer
 renderer.debug.checkShaderErrors = true;
@@ -44,7 +47,7 @@ if (!edgesManager.edgeRegistry) {
   console.warn("⚠️ edgesManager.edgeRegistry was not initialized. Fixing...");
   edgesManager.edgeRegistry = new Map();  // Ensure it's initialized
 }
-const uiManager = new UIManager();
+const uiManager = new UIManager(renderer);
 const eventsManager = new EventsManager(window.camera, nodesManager, uiManager, ship);
 window.eventsManager = eventsManager;
 

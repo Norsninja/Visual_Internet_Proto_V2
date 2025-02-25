@@ -30,7 +30,7 @@ export class CameraController {
     }
     
     // Set a fixed horizon for the camera's far clipping plane (if desired).
-    const horizonOffset = 1000;
+    const horizonOffset = 5000;
     this.camera.far = horizonOffset;
     this.camera.updateProjectionMatrix();
   }

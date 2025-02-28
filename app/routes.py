@@ -373,7 +373,7 @@ def register_routes(app):
             }
         })
 
-    
+            
     @app.route('/web_scan', methods=['GET'])
     def web_scan():
         ip = request.args.get('ip')
@@ -386,19 +386,37 @@ def register_routes(app):
             links_data = extract_hyperlinks(ip, port)
         except Exception as e:
             logging.error(f"Web scan failed for {ip}:{port}: {e}")
-            metadata, links_data = {}, {}
+            metadata, links_data = {"error": str(e)}, {}
 
+        scan_status = "success"
         if "error" in metadata or "error" in links_data:
+            scan_status = "error"
             logging.warning(f"Web scan error for {ip}:{port}: metadata={metadata}, links={links_data}")
-            query_update_node = """
-                MATCH (n:NetworkNode {id: $ip})
-                SET n.web_scanned = true
-            """
-            with db.driver.session() as session:
-                session.run(query_update_node, ip=ip)
-            return jsonify({"status": "error", "metadata": {}, "links": []})
 
-        # Ensure the network node exists
+        # ✅ Ensure the scan result is stored, even if it's an error
+        scan_properties = {
+            "url": metadata.get("url", f"http://{ip}:{port}"),
+            "status_code": metadata.get("status_code", None),
+            "content_type": metadata.get("content_type", None),
+            "server": metadata.get("server", None),
+            "title": metadata.get("title", "Unknown"),
+            "description": metadata.get("description", "Unknown"),
+            "error": metadata.get("error", None)  # Store error if applicable
+        }
+        db.store_scan("webscan", ip, scan_properties, extra_labels=["WebScan"])
+
+        # ✅ Update the scanned status of the network node
+        query_update_node = """
+            MATCH (n:NetworkNode {id: $ip})
+            SET n.web_scanned = true, n.fully_scanned = true
+        """
+        with db.driver.session() as session:
+            session.run(query_update_node, ip=ip)
+
+        if scan_status == "error":
+            return jsonify({"status": "error", "metadata": metadata, "links": []})
+
+        # ✅ If no errors, continue normal processing...
         node_data = db.get_node_by_id(ip) or {
             "id": ip,
             "type": "device",
@@ -409,7 +427,7 @@ def register_routes(app):
         }
         db.upsert_network_node(node_data)
 
-        # Ensure the web node for the scanned website exists
+        # ✅ Store WebNode if metadata is valid
         web_node_id = metadata["url"]
         web_node = {
             "id": web_node_id,
@@ -427,35 +445,14 @@ def register_routes(app):
         }
         db.upsert_web_node(web_node)
 
-        # ✅ Restore the HOSTS relationship between the scanned device and the web node
         if db.get_node_by_id(web_node_id):
             db.create_relationship(ip, web_node_id, "HOSTS", {"port": port, "layer": "web"})
 
-        # Store the web scan with metadata
-        scan_properties = {
-            "url": metadata.get("url", f"http://{ip}:{port}"),
-            "status_code": metadata.get("status_code"),
-            "content_type": metadata.get("content_type"),
-            "server": metadata.get("server"),
-            "title": metadata.get("title", "Unknown"),
-            "description": metadata.get("description", "Unknown"),
-        }
-        db.store_scan("webscan", ip, scan_properties, extra_labels=["WebScan"])
-
-        # ✅ Update the scanned status of the network node
-        query_update_node =  """
-            MATCH (n:NetworkNode {id: $ip})
-            SET n.web_scanned = true
-        """
-        with db.driver.session() as session:
-            session.run(query_update_node, ip=ip)
-
-        # ✅ Restore WebNode-Hyperlink relationships
+        # ✅ Process links if available
         for link in links_data.get("links", []):
             link_url = link["url"]
             resolved_ip = link.get("resolved_ip")
 
-            # Upsert hyperlink WebNode
             db.upsert_web_node({
                 "id": link_url,
                 "url": link_url,
@@ -469,14 +466,10 @@ def register_routes(app):
                 "parentId": metadata["url"]
             })
 
-            # ✅ Ensure WEB_LINK relationship is created
-            time.sleep(0.05)  # Helps with Neo4j consistency in batch inserts
+            time.sleep(0.05)
             if db.get_node_by_id(metadata["url"]) and db.get_node_by_id(link_url):
                 db.create_relationship(metadata["url"], link_url, "WEB_LINK", {"type": link["type"], "layer": "web"})
-            else:
-                logging.warning(f"⚠️ Skipping WEB_LINK: Missing nodes -> {metadata['url']} ↔ {link_url}")
 
-            # ✅ Ensure external discovered nodes are stored properly
             if link.get("type") == "external" and resolved_ip:
                 db.upsert_network_node({
                     "id": resolved_ip,
@@ -486,12 +479,12 @@ def register_routes(app):
                     "role": "External Node",
                     "last_seen": time.time()
                 })
-
-                # Ensure the DISCOVERED relationship is created
                 if db.get_node_by_id(resolved_ip):
                     db.create_relationship(metadata["url"], resolved_ip, "DISCOVERED", {"source": "web_scan"})
 
         return jsonify({"status": "success", "metadata": metadata, "links": links_data.get("links", [])})
+
+
 
 
 

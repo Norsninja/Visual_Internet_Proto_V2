@@ -8,102 +8,127 @@ export class NodesManager {
   constructor(scene) {
     this.scene = scene;
     this.nodeRegistry = new Map();  // Stores Three.js meshes by node ID
-    this.missedUpdates = new Map(); // (Optional) Tracks how many times a node was missing
     this.state = new GraphState();  // Central data store
     this.physicsEngine = null;      // We'll instantiate it once we have data
+    // Maintain a set of nodes that have pending updates
+    this.changedNodes = new Set();
+    this.nodeCreationListeners = [];
   }
-
-  // Main updateNodes method now calls three specialized helper functions
+  onNodeCreated(callback) {
+    this.nodeCreationListeners.push(callback);
+    return this;
+  }
+  // Update nodes with the ability to selectively mark changes
   updateNodes(nodesData, edgesData) {
-    this.updateGraphState(nodesData);
+    nodesData.forEach(nodeData => {
+      this.state.addOrUpdateNode(nodeData);
+      // Mark this node as changed
+      this.changedNodes.add(nodeData.id);
+    });
+    // Only update nodes that are in the changedNodes set
     this.reconcileSceneMeshes();
     this.updatePhysicsEngine(edgesData);
+    // Clear the set after reconciling
+    this.changedNodes.clear();
   }
 
-  // 1. Update the central GraphState with new node data.
-  updateGraphState(nodesData) {
-    nodesData.forEach(node => {
-      this.state.addOrUpdateNode(node);
-    });
-  }
-
-  // 2. Reconcile the scene: create new meshes or update existing ones based on the GraphState.
+  // Reconcile only changed nodes rather than all nodes
   reconcileSceneMeshes() {
-    const allNodes = this.state.getAllNodes();
+    // If no specific nodes are marked, default to updating all nodes
+    const nodeStates = this.changedNodes.size > 0
+      ? Array.from(this.changedNodes).map(id => this.state.getNode(id))
+      : this.state.getAllNodes();
+
     const routerMesh = this.getNodeById("router");
 
-    allNodes.forEach(nodeState => {
-        if (nodeState.type && nodeState.type.toLowerCase().startsWith("scan")) {
-            return;
+    nodeStates.forEach(nodeState => {
+      // Skip nodes that represent scans
+      if (nodeState.type && nodeState.type.toLowerCase().startsWith("scan")) {
+        return;
+      }
+
+      let mesh = this.nodeRegistry.get(nodeState.id);
+
+      if (!mesh) {
+        if (!nodeState.position && nodeState.layer !== "web") {
+          if (nodeState.type === "router") {
+            nodeState.position = new THREE.Vector3(0, 0, 0);
+          } else if (nodeState.type === "device" && routerMesh) {
+            let angle = Math.random() * Math.PI * 2;
+            let radius = 30 + Math.random() * 20;
+            let zOffset = (Math.random() - 0.5) * 20;
+            nodeState.position = new THREE.Vector3(
+              routerMesh.position.x + radius * Math.cos(angle),
+              routerMesh.position.y + radius * Math.sin(angle),
+              routerMesh.position.z + zOffset
+            );
+          } else {
+            let angle = Math.random() * Math.PI * 2;
+            let radius = 100 + Math.random() * 50;
+            let zOffset = (Math.random() - 0.5) * 50;
+            nodeState.position = new THREE.Vector3(
+              radius * Math.cos(angle),
+              radius * Math.sin(angle),
+              routerMesh ? routerMesh.position.z + zOffset : zOffset
+            );
+          }
         }
-
-        let mesh = this.nodeRegistry.get(nodeState.id);
-
-        if (!mesh) {
-            if (!nodeState.position && nodeState.layer !== "web") {
-                if (nodeState.type === "router") {
-                    nodeState.position = new THREE.Vector3(0, 0, 0);
-                } else if (nodeState.type === "device" && routerMesh) {
-                    let angle = Math.random() * Math.PI * 2;
-                    let radius = 30 + Math.random() * 20;
-                    let zOffset = (Math.random() - 0.5) * 20;
-                    nodeState.position = new THREE.Vector3(
-                        routerMesh.position.x + radius * Math.cos(angle),
-                        routerMesh.position.y + radius * Math.sin(angle),
-                        routerMesh.position.z + zOffset
-                    );
-                } else {
-                    let angle = Math.random() * Math.PI * 2;
-                    let radius = 100 + Math.random() * 50;
-                    let zOffset = (Math.random() - 0.5) * 50;
-                    nodeState.position = new THREE.Vector3(
-                        radius * Math.cos(angle),
-                        radius * Math.sin(angle),
-                        routerMesh ? routerMesh.position.z + zOffset : zOffset
-                    );
-                }
-            }
-
-            // Create a new mesh
-            mesh = createNodeMesh(nodeState);
-            this.scene.add(mesh);
-            this.nodeRegistry.set(nodeState.id, mesh);
-        } else {
-            // Update existing mesh's userData and properties.
-            Object.assign(mesh.userData, nodeState);
-            if (nodeState.layer !== "web" && nodeState.position) {
-                mesh.position.copy(nodeState.position);
-            }
+        // Create a new mesh
+        mesh = createNodeMesh(nodeState);
+        this.scene.add(mesh);
+        this.nodeRegistry.set(nodeState.id, mesh);
+        this.nodeCreationListeners.forEach(listener => listener(nodeState.id, mesh));
+      } else {
+        // Update existing mesh's userData and properties
+        Object.assign(mesh.userData, nodeState);
+        if (nodeState.position) {
+          mesh.position.copy(nodeState.position);
+        } else if (nodeState.layer === "web" && nodeState.parentId) {
+          // Special handling for web nodes with parents
+          const parentNode = this.getNodeById(nodeState.parentId);
+          if (parentNode) {
+            const angle = Math.random() * Math.PI * 2;
+            const radius = 15 + Math.random() * 10;
+            const zOffset = (Math.random() - 0.5) * 10;
+            
+            mesh.position.set(
+              radius * Math.cos(angle),
+              radius * Math.sin(angle),
+              zOffset
+            );
+            
+            // Store world position for edge reference
+            mesh.updateMatrixWorld(true);
+            mesh.userData.worldPosition = new THREE.Vector3();
+            mesh.getWorldPosition(mesh.userData.worldPosition);
+          }
         }
+      }
 
-        // ✅ Update material based on scan completion status
-        if (nodeState.fully_scanned) {
-            mesh.material.color.set("#00FF00"); // Fully scanned nodes turn green
-            mesh.material.emissive.set("#008000"); // Add some emissive glow
-            mesh.material.emissiveIntensity = 0.5;
-        } else {
-            mesh.material.color.set(nodeState.color || (nodeState.type === "external" ? "red" : "#0099FF"));
+      // Update mesh material based on scan status
+      if (nodeState.fully_scanned) {
+        mesh.material.color.set("#00FF00");
+        mesh.material.emissive.set("#008000");
+        mesh.material.emissiveIntensity = 0.5;
+      } else {
+        mesh.material.color.set(nodeState.color || (nodeState.type === "external" ? "red" : "#0099FF"));
+      }
+
+      // Update overlays
+      overlayManager.updateOverlays(mesh);
+
+      // Spawn child nodes for open ports if necessary
+      if (mesh.userData.ports && mesh.userData.ports.length > 0) {
+        if (!mesh.getObjectByName(`${mesh.userData.id}-port-${mesh.userData.ports[0]}`)) {
+          this.spawnChildNodes(mesh, mesh.userData.ports);
         }
-
-        // Update overlays.
-        overlayManager.updateOverlays(mesh);
-
-        // Spawn child nodes for open ports if necessary.
-        if (mesh.userData.ports && mesh.userData.ports.length > 0) {
-            if (!mesh.getObjectByName(`${mesh.userData.id}-port-${mesh.userData.ports[0]}`)) {
-                this.spawnChildNodes(mesh, mesh.userData.ports);
-            }
-        }
+      }
     });
-}
+  }
 
-  
-
-  // 3. Update or create the PhysicsEngine with current nodes and links.
   updatePhysicsEngine(edgesData) {
     const d3Nodes = [];
     this.nodeRegistry.forEach((mesh, id) => {
-      // Skip child nodes from the physics simulation.
       if (mesh.userData.type === "child") return;
       d3Nodes.push({ id: id });
     });

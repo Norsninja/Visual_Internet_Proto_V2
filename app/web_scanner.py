@@ -2,49 +2,57 @@ import requests
 import socket
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
+import logging
 
 def fetch_website_metadata(ip, port, parent_id=None, extra_data=None):
-    """Fetch metadata and headers from a website hosted on the given IP and port.
-    Optionally, attach a parent_id to extra_data without overwriting existing keys.
-    """
+    """Fetch metadata and headers from a website hosted on the given IP and port."""
     url = f"http://{ip}:{port}" if port != 443 else f"https://{ip}"
+    
     try:
         response = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
         response.raise_for_status()
-
-        headers = response.headers
-        metadata = {
-            "ip": ip,
-            "port": port,
-            "url": url,
-            "status_code": response.status_code,
-            "content_type": headers.get("Content-Type", "Unknown"),
-            "server": headers.get("Server", "Unknown"),
-            "title": "Unknown",
-            "description": "Unknown",
-            "security": "HTTPS" if url.startswith("https") else "HTTP"
-        }
-
-        # Parse the HTML if it's a webpage
-        if "text/html" in metadata["content_type"]:
-            soup = BeautifulSoup(response.text, "html.parser")
-            title_tag = soup.find("title")
-            description_tag = soup.find("meta", attrs={"name": "description"})
-            if title_tag:
-                metadata["title"] = title_tag.text.strip()
-            if description_tag and "content" in description_tag.attrs:
-                metadata["description"] = description_tag["content"].strip()
-
-        # Merge extra_data and attach parent_id without overwriting existing keys
-        if extra_data is None:
-            extra_data = {}
-        if parent_id is not None:
-            extra_data.setdefault("parentId", parent_id)
-        metadata["extra_data"] = extra_data
-
-        return metadata
+    except requests.exceptions.SSLError as ssl_err:
+        logging.warning(f"SSL error for {ip}:{port}. Retrying with verify=False. Error: {ssl_err}")
+        try:
+            response = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"}, verify=False)
+            response.raise_for_status()
+        except requests.RequestException as final_err:
+            return {"error": f"SSL verification failed: {final_err}"}
     except requests.RequestException as e:
         return {"error": str(e)}
+
+    headers = response.headers
+    metadata = {
+        "ip": ip,
+        "port": port,
+        "url": url,
+        "status_code": response.status_code,
+        "content_type": headers.get("Content-Type", "Unknown"),
+        "server": headers.get("Server", "Unknown"),
+        "title": "Unknown",
+        "description": "Unknown",
+        "security": "HTTPS" if url.startswith("https") else "HTTP"
+    }
+
+    # Parse the HTML if it's a webpage
+    if "text/html" in metadata["content_type"]:
+        soup = BeautifulSoup(response.text, "html.parser")
+        title_tag = soup.find("title")
+        description_tag = soup.find("meta", attrs={"name": "description"})
+        if title_tag:
+            metadata["title"] = title_tag.text.strip()
+        if description_tag and "content" in description_tag.attrs:
+            metadata["description"] = description_tag["content"].strip()
+
+    # Merge extra_data
+    if extra_data is None:
+        extra_data = {}
+    if parent_id is not None:
+        extra_data.setdefault("parentId", parent_id)
+    metadata["extra_data"] = extra_data
+
+    return metadata
+
 
 def resolve_domain_to_ip(domain):
     """Resolve a domain to its corresponding IP address."""

@@ -6,7 +6,7 @@ from network_scanner import run_arp_scan, run_traceroute, scapy_port_scan, get_a
 import schedule
 from config import external_target
 from labeling import generate_node_label
-
+import re
 # Neo4j connection settings
 NEO4J_URI = "bolt://localhost:7687"
 NEO4J_USER = "neo4j"
@@ -23,10 +23,17 @@ class Neo4jDB:
 
     def init_constraints(self):
         with self.driver.session() as session:
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (a:ASNNode) REQUIRE a.id IS UNIQUE")
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (n:NetworkNode) REQUIRE n.id IS UNIQUE")
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (w:WebNode) REQUIRE w.id IS UNIQUE")
-            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (s:Scan) REQUIRE s.id IS UNIQUE")
+            # Indexes for faster node lookups
+            session.run("CREATE INDEX IF NOT EXISTS FOR (n:NetworkNode) ON (n.id)")
+            session.run("CREATE INDEX IF NOT EXISTS FOR (n:WebNode) ON (n.id)")
+            session.run("CREATE INDEX IF NOT EXISTS FOR (n:ASNNode) ON (n.id)")
+            
+            # Indexes for common query patterns
+            session.run("CREATE INDEX IF NOT EXISTS FOR (n:NetworkNode) ON (n.type)")
+            session.run("CREATE INDEX IF NOT EXISTS FOR (n:NetworkNode) ON (n.fully_scanned)")
+            
+            # Other useful indexes
+            session.run("CREATE INDEX IF NOT EXISTS FOR (n:Scan) ON (n.type)")
 
 
     def upsert_network_node(self, node):
@@ -314,14 +321,25 @@ class Neo4jDB:
             session.run(query_update, target_ip=target_ip, scan_type=scan_type, required_scans=required_scans)
 
     
+
+
     def store_traceroute(self, target_ip, hops, traceroute_mode="local"):
         if not hops:
             print(f"No valid hops for {target_ip}, skipping storage.")
             return
 
         prev_hop = target_ip
+        ip_pattern = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")  # Regex for valid IPv4
+
         for hop in hops:
             hop_ip = hop["ip"] if isinstance(hop, dict) and "ip" in hop else hop
+
+            # ✅ Skip non-IP hops
+            if not ip_pattern.match(hop_ip):
+                logging.warning(f"Skipping non-IP hop: {hop_ip}")
+                continue
+
+            # ✅ Skip empty or wildcard hops
             if hop_ip == "*" or hop_ip.strip() == "":
                 continue
 
@@ -348,6 +366,7 @@ class Neo4jDB:
             prev_hop = hop_ip
 
         print(f"Stored {traceroute_mode} traceroute for {target_ip}: {hops}")
+
 
 
 

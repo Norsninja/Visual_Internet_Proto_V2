@@ -31,3 +31,4 @@ logs/
 *.log
 
 src/ui/traffic_meter.js
+neomap_test.html

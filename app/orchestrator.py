@@ -18,11 +18,20 @@ from config import external_target  # External target configuration
 
 # Global lock to prevent overlapping scans.
 scan_lock = threading.Lock()
+last_router_scan = 0  # Global variable to track last scan time
 
 def update_router_data():
-    """Collect and return router node data."""
+    """Collect and return router node data, but limit scan frequency."""
+    global last_router_scan
     now = time.time()
+    
+    if now - last_router_scan < 300:  # Only scan the router every 10 minutes
+        logging.info("Skipping router scan to reduce frequency.")
+        return None  # Skip scanning
+    
+    last_router_scan = now  # Update the last scan timestamp
     gateway_ip = get_gateway() or "192.168.1.1"
+    
     router_data = {
         "id": gateway_ip,
         "type": "router",
@@ -32,11 +41,13 @@ def update_router_data():
         "last_seen": now,
         "public_ip": get_public_ip(),
     }
-    # Optionally perform a port scan on the gateway.
+    
     external_ports = scapy_port_scan(gateway_ip, start_port=20, end_port=1024)
     if external_ports:
         router_data["open_external_port"] = external_ports[0]
+    
     return router_data
+
 
 def update_local_devices():
     """Collect and return a list of local device node data."""

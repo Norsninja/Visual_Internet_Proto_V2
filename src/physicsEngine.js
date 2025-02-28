@@ -134,23 +134,24 @@ export class PhysicsEngine {
   updateGraph(nodesArray, edgesArray) {
     const prevNodeCount = this.nodes.length;
     const prevLinkCount = this.links.length;
-
+  
     this.nodes = this.initializeNodes(nodesArray);
     this.links = edgesArray;
-
+  
     this.simulation.nodes(this.nodes);
     this.simulation.force('link').links(this.links);
-
+  
     // Re-pin the router
     this.pinRouter();
-
+  
     const nodesChanged = this.nodes.length !== prevNodeCount;
     const linksChanged = this.links.length !== prevLinkCount;
-
-    // Reheat the simulation. If big changes, alpha=1; else small nudge with alpha=0.2
-    const newAlpha = (nodesChanged || linksChanged) ? 0.1 : 0.1;
+  
+    // Use a smaller alpha if changes are minimal
+    const newAlpha = (nodesChanged || linksChanged) ? 0.1 : 0.02;
     this.simulation.alpha(newAlpha).restart();
   }
+  
   
 }
 

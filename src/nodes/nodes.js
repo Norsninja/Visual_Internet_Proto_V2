@@ -43,10 +43,18 @@ export class NodesManager {
 
     nodeStates.forEach(nodeState => {
       // Skip nodes that represent scans
-      if (nodeState.type && nodeState.type.toLowerCase().startsWith("scan")) {
+      if (
+        nodeState.id &&
+        (
+          nodeState.id.startsWith('portscan-') ||
+          nodeState.id.startsWith('bgpscan-') ||
+          nodeState.id.startsWith('sslscan-') ||
+          nodeState.id.startsWith('webscan-') ||
+          nodeState.id.startsWith('advanced_')
+        )
+      ) {
         return;
-      }
-
+      }    
       let mesh = this.nodeRegistry.get(nodeState.id);
 
       if (!mesh) {

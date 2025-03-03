@@ -1,20 +1,21 @@
 import time
-# import json
 import re
-# import sqlite3
 import logging
 from flask import jsonify, request
 from db import db
-# from db import get_node_by_id, fetch_full_graph, store_traceroute, get_cached_traceroute, update_node, store_traceroute
-# from scanners import traffic_data, external_target
 from network_scanner import grab_banner, check_cve, reverse_dns_lookup, get_ssl_info, scapy_port_scan, run_traceroute
 from web_scanner import fetch_website_metadata, extract_hyperlinks
-# from db import update_node, update_edge, get_node_by_id
 import threading
 import requests
 from bgp_scanner import scan_asn 
 from labeling import generate_node_label
-from traffic_monitor import traffic_data  # Import the global traffic_data deque
+from traffic_monitor import traffic_data
+from cache_helpers import get_node_details_cached, bust_node_details_cache
+import json
+from genes import NodeGeneticSystem
+
+# Initialize gene system with db connection
+gene_system = NodeGeneticSystem(db)
 
 def immediate_traceroute_update(new_target):
     hops = run_traceroute(target=new_target)
@@ -26,40 +27,109 @@ def immediate_traceroute_update(new_target):
 def register_routes(app):
     @app.route('/banner_grab', methods=['GET'])
     def banner_grab():
+        # node_id, ip, and port all come from the query string
         ip = request.args.get('ip')
         port = request.args.get('port', type=int)
+
         if not ip or not port:
-            return jsonify({'error': 'Missing IP or Port parameter'}), 400
-        return jsonify({'port': port, 'banner': grab_banner(ip, port)})
-    
-    @app.route('/cve_lookup', methods=['GET'])
-    def cve_lookup():
-        service = request.args.get('service')
-        version = request.args.get('version')
-        if not service or not version:
-            return jsonify({'error': 'Missing service or version parameters'}), 400
-        return jsonify({'cve_data': check_cve(service, version)})
-    
+            return jsonify({'error': 'Missing ip or port query param'}), 400
+
+        banner = grab_banner(ip, port)
+
+        # Store the results in Neo4j
+        db.store_port_scan_advanced_result(ip, port, "bannerGrab", banner)
+
+        # Bust cache for that node_id
+        bust_node_details_cache(ip)
+
+        return jsonify({'port': port, 'banner': banner})
+
+
     @app.route('/reverse_dns', methods=['GET'])
     def reverse_dns():
         ip = request.args.get('ip')
+        port = request.args.get('port', type=int, default=None)  # optional
+
         if not ip:
-            return jsonify({'error': 'Missing IP parameter'}), 400
-        return jsonify({'hostname': reverse_dns_lookup(ip)})
-    
+            return jsonify({'error': 'Missing ip query param'}), 400
+
+        hostname = reverse_dns_lookup(ip)
+
+        db.store_port_scan_advanced_result(ip, port, "reverseDNS", hostname)
+
+
+        bust_node_details_cache(ip)
+
+        return jsonify({'hostname': hostname})
+
+
     @app.route('/ssl_info', methods=['GET'])
     def ssl_info():
         ip = request.args.get('ip')
         port = request.args.get('port', type=int)
+
         if not ip or not port:
-            return jsonify({'error': 'Missing IP or Port parameter'}), 400
-        return jsonify({'ssl_data': get_ssl_info(ip, port)})
-    
+            return jsonify({'error': 'Missing ip or port query param'}), 400
+
+        ssl_data = get_ssl_info(ip, port)
+
+        if isinstance(ssl_data, str):
+            # It's an error string
+            db.store_port_scan_advanced_result(ip, port, "sslInfo", {'error': ssl_data})
+            bust_node_details_cache(ip)
+            return jsonify({'error': ssl_data}), 500
+
+        # Convert to serializable dictionary
+        try:
+            serializable_ssl_data = {
+                "issuer": str(ssl_data.get("issuer", "Unknown")),
+                "notBefore": str(ssl_data.get("notBefore", "")),
+                "notAfter": str(ssl_data.get("notAfter", "")),
+                "serialNumber": str(ssl_data.get("serialNumber", "")),
+                "version": ssl_data.get("version", ""),
+                "subjectAltName": str(ssl_data.get("subjectAltName", []))
+            }
+            db.store_port_scan_advanced_result(ip, port, "sslInfo", serializable_ssl_data)
+            if ip:
+                bust_node_details_cache(ip)
+            return jsonify({'ssl_data': serializable_ssl_data})
+        except Exception as e:
+            error_msg = f"Error processing SSL data: {str(e)}"
+            logging.error(error_msg)
+            db.store_port_scan_advanced_result(ip, port, "sslInfo", {'error': error_msg})
+            if ip:
+                bust_node_details_cache(ip)
+            return jsonify({'error': error_msg}), 500
+
+
+    @app.route('/cve_lookup', methods=['GET'])
+    def cve_lookup():
+        service = request.args.get('service')
+        version = request.args.get('version')
+        ip = request.args.get('ip')
+        port = request.args.get('port', type=int)
+
+        if not service or not version:
+            return jsonify({'error': 'Missing service or version query param'}), 400
+
+        cve_data = check_cve(service, version)
+
+        # If we have an ip+port, store in Neo4j
+        if ip and port:
+            db.store_port_scan_advanced_result(ip, port, "cveLookup", cve_data)
+
+
+        bust_node_details_cache(ip)
+
+        return jsonify({'cve_data': cve_data})
+
+
     @app.route('/remote_traceroute', methods=['GET'])
     def remote_traceroute():
         target = request.args.get("target")
+
         if not target:
-            return jsonify({"error": "Missing target IP"}), 400
+            return jsonify({"error": "Missing target query param"}), 400
 
         try:
             REMOTE_SERVER = "https://visual-internet-prototype-remote.fly.dev/"
@@ -67,11 +137,10 @@ def register_routes(app):
             hops = response.json().get("hops", [])
 
             if hops:
-                # Pass traceroute_mode="remote" here
                 db.store_traceroute(target, hops, traceroute_mode="remote")
+                bust_node_details_cache(target)
 
             return jsonify({"target": target, "hops": hops, "cached": False})
-
         except Exception as e:
             logging.error(f"Error contacting remote traceroute server: {e}")
             return jsonify({"error": "Failed to retrieve remote traceroute"}), 500
@@ -93,11 +162,12 @@ def register_routes(app):
             query = """
             MATCH (n) 
             WHERE (n:NetworkNode OR n:WebNode OR n:ASNNode)
-            AND NOT (n.id STARTS WITH 'bgpscan-' OR
-                    n.id STARTS WITH 'portscan-' OR
-                    n.id STARTS WITH 'sslscan-' OR
-                    n.id STARTS WITH 'webscan-')
+            AND NOT n:Scan
+            AND NOT n:AdvancedResult
+            AND NOT n.id STARTS WITH 'advanced_portscan-'
             OPTIONAL MATCH (n)-[r]->(m)
+            WHERE NOT m:Scan AND NOT m:AdvancedResult
+            AND NOT m.id STARTS WITH 'advanced_portscan-'
             RETURN n, r, m
             """
             with db.driver.session() as session:
@@ -131,6 +201,51 @@ def register_routes(app):
         except Exception as e:
             logging.error(f"Error fetching network data: {e}")
             return jsonify({"error": "Failed to retrieve network data"}), 500
+        
+    @app.route('/scan_ports', methods=['GET'])
+    def scan_ports():
+        ip = request.args.get('ip')
+        deep_scan = request.args.get('deep_scan', 'false').lower() == 'true'
+
+        if not ip:
+            return jsonify({"error": "No IP address provided"}), 400
+
+        try:
+            start_port = 20
+            end_port = 1024
+
+            # Include additional service-specific ports if deep scan is requested
+            extended_ports = None
+            if deep_scan:
+                from port_mappings import INTERESTING_PORTS
+                extended_ports = INTERESTING_PORTS
+
+            # Run the scan
+            open_ports = scapy_port_scan(ip, start_port, end_port, extended_ports=extended_ports)
+
+            # Store scan in Neo4j
+            scan_data = {
+                "type": "portscan",
+                "timestamp": time.time(),
+                "ports": open_ports,
+                "deep_scan": deep_scan
+            }
+            db.store_scan("portscan", ip, scan_data, extra_labels=["PortScan"])
+
+            # Bust the cache so node details refresh
+            bust_node_details_cache(ip)
+
+            return jsonify({
+                "status": "success", 
+                "ports": open_ports, 
+                "deep_scan": deep_scan
+            })
+
+        except Exception as e:
+            logging.error(f"Error scanning ports for {ip}: {str(e)}")
+            return jsonify({"error": str(e)}), 500
+
+
 
     @app.route('/get_scan_data', methods=['GET'])
     def get_scan_data():
@@ -147,22 +262,26 @@ def register_routes(app):
             scans = [dict(record["s"]) for record in result]
 
         return jsonify({"target_ip": target_ip, "scans": scans})
-    
-    @app.route('/scan_ports', methods=['GET'])
-    def scan_ports():
-        ip = request.args.get('ip')
-        if not ip:
-            return jsonify({'error': 'Missing IP parameter'}), 400
+            
+    @app.route('/get_adv_results', methods=['GET'])
+    def get_adv_results():
+        target_ip = request.args.get('target_ip')
+        if not target_ip:
+            return jsonify({'error': 'Missing target_ip parameter'}), 400
 
-        try:
-            open_ports = scapy_port_scan(ip)
-            db.store_port_scan(ip, open_ports)
+        # Query to find all AdvancedResult nodes linked to the most recent PortScan for target_ip
+        query = """
+        MATCH (s:Scan {type: 'portscan', target: $target_ip})-[:HAS_ADVANCED_RESULT]->(a:AdvancedResult)
+        RETURN a
+        """
+        with db.driver.session() as session:
+            result = session.run(query, target_ip=target_ip)
+            advanced_results = [dict(record['a']) for record in result]
 
-            return jsonify({'ports': open_ports, 'message': 'Scan complete. Results stored in Neo4j.'})
-
-        except Exception as e:
-            logging.error("Error scanning ports for %s: %s", ip, e)
-            return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'target_ip': target_ip,
+            'advanced_results': advanced_results
+        })
             
     @app.route('/relationship_counts', methods=['GET'])
     def relationship_counts():
@@ -317,6 +436,7 @@ def register_routes(app):
         target = request.args.get('target')
         if not target:
             return jsonify({'error': 'Missing target parameter'}), 400
+        
 
         # Perform the BGP scan from bgp_scanner.py
         results = scan_asn(target)
@@ -333,15 +453,19 @@ def register_routes(app):
         # ✅ Process prefixes efficiently
         prefix_nodes = []
         prefix_relationships = []
+        now = time.time()
+
         for prefix in prefixes:
             prefix_nodes.append({
                 "id": prefix,
                 "type": "prefix",
-                "last_seen": time.time(),
+                "last_seen": now,
                 "color": "#0099FF",
                 "label": generate_node_label({"id": prefix, "type": "prefix"})
             })
-            prefix_relationships.append((f"AS{asn_info['asn']}", prefix, "ANNOUNCES", {"timestamp": time.time()}))
+            prefix_relationships.append(
+                (f"AS{asn_info['asn']}", prefix, "ANNOUNCES", {"timestamp": now})
+            )
 
         for node in prefix_nodes:
             db.upsert_network_node(node)
@@ -349,20 +473,25 @@ def register_routes(app):
         for asn_id, prefix, rel_type, props in prefix_relationships:
             db.create_asn_network_relationship(asn_id, prefix, rel_type, props)
 
-        # ✅ Process ASN peer relationships efficiently
+        # ✅ Process ASN peer relationships
         peer_relationships = []
         for peer in peers:
             db.upsert_asn_node({'asn': peer, 'holder': "Unknown"})
-            peer_relationships.append((f"AS{asn_info['asn']}", f"AS{peer}", "BGP_PEER", {"timestamp": time.time()}))
+            peer_relationships.append(
+                (f"AS{asn_info['asn']}", f"AS{peer}", "BGP_PEER", {"timestamp": now})
+            )
 
         for asn_id, peer_id, rel_type, props in peer_relationships:
             db.create_asn_network_relationship(asn_id, peer_id, rel_type, props)
 
         # ✅ Explicitly create the ASN-to-target relationship
-        ensure_asn_to_target_connection(asn_info['asn'], target, time.time())
+        ensure_asn_to_target_connection(asn_info['asn'], target, now)
 
         # ✅ Store the BGP scan (only if it does not exist)
         db.store_bgp_scan(target, results)
+
+        # Finally, bust the node details cache if we have a node_id
+        bust_node_details_cache(target)
 
         return jsonify({
             "status": "success",
@@ -373,39 +502,45 @@ def register_routes(app):
             }
         })
 
-            
     @app.route('/web_scan', methods=['GET'])
     def web_scan():
-        ip = request.args.get('ip')
-        port = request.args.get('port', type=int)
+        ip = request.args.get('ip')                # e.g. ?ip=192.168.0.11
+        port = request.args.get('port', type=int)  # e.g. ?port=80
+        hostname = request.args.get('hostname', ip)  # defaults to ip if hostname not provided
+
         if not ip or not port:
             return jsonify({'error': 'Missing IP or Port parameter'}), 400
 
         try:
-            metadata = fetch_website_metadata(ip, port)
-            links_data = extract_hyperlinks(ip, port)
+            # Use hostname for actual HTTP requests
+            metadata = fetch_website_metadata(hostname, port)
+            links_data = extract_hyperlinks(hostname, port)
+            # Store the original IP in the metadata for DB ops
+            metadata["original_ip"] = ip
         except Exception as e:
-            logging.error(f"Web scan failed for {ip}:{port}: {e}")
-            metadata, links_data = {"error": str(e)}, {}
+            logging.error(f"Web scan failed for {hostname}:{port} (original IP: {ip}): {e}")
+            metadata, links_data = {"error": str(e), "original_ip": ip}, {}
 
         scan_status = "success"
         if "error" in metadata or "error" in links_data:
             scan_status = "error"
-            logging.warning(f"Web scan error for {ip}:{port}: metadata={metadata}, links={links_data}")
+            logging.warning(f"Web scan error for {hostname}:{port} (original IP: {ip}): "
+                            f"metadata={metadata}, links={links_data}")
 
-        # ✅ Ensure the scan result is stored, even if it's an error
+        # Store scan results in Neo4j (even if there's an error)
         scan_properties = {
-            "url": metadata.get("url", f"http://{ip}:{port}"),
-            "status_code": metadata.get("status_code", None),
-            "content_type": metadata.get("content_type", None),
-            "server": metadata.get("server", None),
+            "url": metadata.get("url", f"http://{hostname}:{port}"),
+            "hostname": hostname if hostname != ip else None,
+            "status_code": metadata.get("status_code"),
+            "content_type": metadata.get("content_type"),
+            "server": metadata.get("server"),
             "title": metadata.get("title", "Unknown"),
             "description": metadata.get("description", "Unknown"),
-            "error": metadata.get("error", None)  # Store error if applicable
+            "error": metadata.get("error")
         }
         db.store_scan("webscan", ip, scan_properties, extra_labels=["WebScan"])
 
-        # ✅ Update the scanned status of the network node
+        # If you want to mark this node as web_scanned, do so
         query_update_node = """
             MATCH (n:NetworkNode {id: $ip})
             SET n.web_scanned = true, n.fully_scanned = true
@@ -413,10 +548,14 @@ def register_routes(app):
         with db.driver.session() as session:
             session.run(query_update_node, ip=ip)
 
+        # BUST THE CACHE if you have a node_id (and if it’s relevant)
+        bust_node_details_cache(ip)
+
         if scan_status == "error":
             return jsonify({"status": "error", "metadata": metadata, "links": []})
 
-        # ✅ If no errors, continue normal processing...
+        # Else proceed with normal processing
+        # 1) Upsert the device node
         node_data = db.get_node_by_id(ip) or {
             "id": ip,
             "type": "device",
@@ -427,17 +566,18 @@ def register_routes(app):
         }
         db.upsert_network_node(node_data)
 
-        # ✅ Store WebNode if metadata is valid
+        # 2) Create or update the WebNode
         web_node_id = metadata["url"]
         web_node = {
             "id": web_node_id,
             "type": "web",
             "url": metadata["url"],
+            "hostname": hostname if hostname != ip else None,
             "title": metadata.get("title", "Unknown"),
             "description": metadata.get("description", "Unknown"),
-            "status_code": metadata["status_code"],
-            "content_type": metadata["content_type"],
-            "server": metadata["server"],
+            "status_code": metadata.get("status_code"),
+            "content_type": metadata.get("content_type"),
+            "server": metadata.get("server"),
             "port": port,
             "color": "#FF69B4",
             "last_seen": time.time(),
@@ -445,10 +585,11 @@ def register_routes(app):
         }
         db.upsert_web_node(web_node)
 
+        # 3) Create relationship from IP node to the WebNode
         if db.get_node_by_id(web_node_id):
             db.create_relationship(ip, web_node_id, "HOSTS", {"port": port, "layer": "web"})
 
-        # ✅ Process links if available
+        # 4) Process discovered links
         for link in links_data.get("links", []):
             link_url = link["url"]
             resolved_ip = link.get("resolved_ip")
@@ -466,7 +607,7 @@ def register_routes(app):
                 "parentId": metadata["url"]
             })
 
-            time.sleep(0.05)
+            time.sleep(0.05)  # short delay if desired
             if db.get_node_by_id(metadata["url"]) and db.get_node_by_id(link_url):
                 db.create_relationship(metadata["url"], link_url, "WEB_LINK", {"type": link["type"], "layer": "web"})
 
@@ -484,8 +625,207 @@ def register_routes(app):
 
         return jsonify({"status": "success", "metadata": metadata, "links": links_data.get("links", [])})
 
+#New Node details route with cache busting:
+    @app.route('/node_details', methods=['GET'])
+    def node_details():
+        node_id = request.args.get('node_id')
+        if not node_id:
+            return jsonify({"error": "Missing node_id"}), 400
+
+        node_data = get_node_details_cached(node_id)
+        if not node_data:
+            return jsonify({"error": f"No node found with id {node_id}"}), 404
+
+        return jsonify(node_data)
+    
+
+    # New system for node genes    
+    # routes.py - add this new endpoint
 
 
+    # @app.route('/node_genes', methods=['GET'])
+    # def get_node_genes():
+    #     """
+    #     Retrieve genetic traits for a network node.
+    #     These genes determine the node's CA behavior and visual properties.
+    #     """
+    #     node_id = request.args.get('node_id')
+    #     if not node_id:
+    #         return jsonify({"error": "Missing node_id parameter"}), 400
+        
+    #     try:
+    #         # Get or generate genes for this node
+    #         genes = gene_system.get_node_genes(node_id)
+            
+    #         # Check if forcing evolution was requested
+    #         evolve_with = request.args.get('evolve_with')
+    #         interaction_type = request.args.get('interaction_type', 'CONNECTED_TO')
+            
+    #         if evolve_with:
+    #             # Trigger gene evolution with the specified node
+    #             success = gene_system.evolve_genes_from_interaction(
+    #                 node_id, evolve_with, interaction_type
+    #             )
+                
+    #             if success:
+    #                 # Fetch updated genes after evolution
+    #                 genes = gene_system.get_node_genes(node_id)
+                    
+    #                 return jsonify({
+    #                     "node_id": node_id,
+    #                     "genes": genes,
+    #                     "evolution": {
+    #                         "partner": evolve_with,
+    #                         "interaction_type": interaction_type,
+    #                         "success": True
+    #                     }
+    #                 })
+    #             else:
+    #                 return jsonify({
+    #                     "node_id": node_id,
+    #                     "genes": genes,
+    #                     "evolution": {
+    #                         "partner": evolve_with,
+    #                         "interaction_type": interaction_type,
+    #                         "success": False,
+    #                         "message": "Evolution failed or was too weak to produce changes"
+    #                     }
+    #                 })
+            
+    #         # Standard response without evolution
+    #         return jsonify({
+    #             "node_id": node_id,
+    #             "genes": genes
+    #         })
+        
+    #     except Exception as e:
+    #         logging.error(f"Error processing node genes for {node_id}: {str(e)}")
+    #         return jsonify({
+    #             "error": f"Failed to process node genes: {str(e)}"
+    #         }), 500
 
+    # @app.route('/node_genes/evolve', methods=['POST'])
+    # def trigger_gene_evolution():
+    #     """
+    #     Explicitly trigger gene evolution between two nodes.
+    #     This endpoint can be used to force gene sharing between any two nodes.
+    #     """
+    #     data = request.get_json()
+        
+    #     source_id = data.get('source_id')
+    #     target_id = data.get('target_id')
+    #     interaction_type = data.get('interaction_type', 'CONNECTED_TO')
+        
+    #     if not source_id or not target_id:
+    #         return jsonify({"error": "Missing source_id or target_id"}), 400
+        
+    #     try:
+    #         # Trigger gene evolution
+    #         success = gene_system.evolve_genes_from_interaction(
+    #             source_id, target_id, interaction_type
+    #         )
+            
+    #         if success:
+    #             # Fetch updated genes for both nodes
+    #             source_genes = gene_system.get_node_genes(source_id)
+    #             target_genes = gene_system.get_node_genes(target_id)
+                
+    #             return jsonify({
+    #                 "success": True,
+    #                 "source": {
+    #                     "id": source_id,
+    #                     "genes": source_genes
+    #                 },
+    #                 "target": {
+    #                     "id": target_id,
+    #                     "genes": target_genes
+    #                 },
+    #                 "interaction_type": interaction_type
+    #             })
+    #         else:
+    #             return jsonify({
+    #                 "success": False,
+    #                 "message": "Evolution failed or was too weak to produce changes",
+    #                 "source_id": source_id,
+    #                 "target_id": target_id,
+    #                 "interaction_type": interaction_type
+    #             })
+        
+    #     except Exception as e:
+    #         logging.error(f"Error during gene evolution: {str(e)}")
+    #         return jsonify({
+    #             "success": False,
+    #             "error": f"Failed to evolve genes: {str(e)}"
+    #         }), 500
 
-
+    # @app.route('/node_genes/related', methods=['GET'])
+    # def get_genetically_related_nodes():
+    #     """
+    #     Find nodes that share genetic heritage with the specified node.
+    #     This can be used to visualize gene propagation throughout the network.
+    #     """
+    #     node_id = request.args.get('node_id')
+    #     if not node_id:
+    #         return jsonify({"error": "Missing node_id parameter"}), 400
+        
+    #     try:
+    #         # Get genes for this node
+    #         genes = gene_system.get_node_genes(node_id)
+            
+    #         if not genes:
+    #             return jsonify({
+    #                 "node_id": node_id,
+    #                 "related_nodes": [],
+    #                 "message": "No genes found for this node"
+    #             })
+            
+    #         # Extract parent IDs from metadata
+    #         parent_ids = genes["metadata"].get("parent_ids", [])
+            
+    #         # Query Neo4j for nodes with a genetic relationship
+    #         query = """
+    #         MATCH (n {id: $node_id})
+    #         OPTIONAL MATCH (n)-[r]->(related)
+    #         WHERE r.type IN ['CONNECTED_TO', 'HOSTS', 'TRACEROUTE_HOP', 'BGP_PEER']
+            
+    #         WITH related
+    #         WHERE related.genes IS NOT NULL
+            
+    #         RETURN related.id AS related_id, 
+    #             related.genes AS genes,
+    #             related.type AS node_type
+    #         """
+            
+    #         related_nodes = []
+    #         with db.driver.session() as session:
+    #             result = session.run(query, node_id=node_id)
+                
+    #             for record in result:
+    #                 related_id = record["related_id"]
+    #                 related_genes = json.loads(record["genes"])
+                    
+    #                 # Calculate genetic similarity
+    #                 similarity = gene_system.calculate_genetic_similarity(genes, related_genes)
+                    
+    #                 related_nodes.append({
+    #                     "id": related_id,
+    #                     "type": record["node_type"],
+    #                     "genetic_similarity": similarity,
+    #                     "is_parent": related_id in parent_ids,
+    #                     "shared_traits": gene_system.identify_shared_traits(genes, related_genes)
+    #                 })
+            
+    #         # Sort by genetic similarity
+    #         related_nodes.sort(key=lambda x: x["genetic_similarity"], reverse=True)
+            
+    #         return jsonify({
+    #             "node_id": node_id,
+    #             "generation": genes["metadata"].get("generation", 1),
+    #             "related_nodes": related_nodes
+    #         })
+        
+    #     except Exception as e:
+    #         logging.error(f"Error finding related nodes for {node_id}: {str(e)}")
+    #         return jsonify({
+    #             "error": f"Failed to find genetically related nodes: {str(e)}"
+    #         }), 500

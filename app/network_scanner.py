@@ -76,37 +76,48 @@ def run_traceroute(target="8.8.8.8"):
         logging.error("Error running traceroute: %s", e)
         return []
 
-def scapy_port_scan(ip, start_port=20, end_port=1024, timeout=2):
+def scapy_port_scan(ip, start_port=20, end_port=1024, timeout=2, extended_ports=None):
     """
     Perform a TCP SYN scan using Scapy on the given IP address.
-    
+
     :param ip: Target IP address.
     :param start_port: Starting port number.
     :param end_port: Ending port number.
     :param timeout: Timeout in seconds for responses.
+    :param extended_ports: Additional service-specific ports (optional).
     :return: A list of open ports.
     """
     open_ports = []
+    
+    # Base port range
     ports = list(range(start_port, end_port + 1))
     
-    # Build the SYN packets for all ports
+    # Include additional service-specific ports
+    if extended_ports:
+        ports.extend([p for p in extended_ports if p > end_port])
+        ports = sorted(set(ports))  # Remove duplicates
+
+    logging.info("Scanning %s for ports %s to %s%s", 
+                 ip, start_port, end_port,
+                 f" + {len(extended_ports)} extended ports" if extended_ports else "")
+    
+    # Build SYN packets for all ports
     packets = [IP(dst=ip)/TCP(dport=port, flags="S") for port in ports]
     
-    logging.info("Starting Scapy scan on %s for ports %s to %s", ip, start_port, end_port)
-    
-    # Send the packets concurrently and collect responses
+    # Send packets & collect responses
     answered, unanswered = sr(packets, timeout=timeout, verbose=0)
     
-    # Process the responses: a SYN-ACK (flags=0x12) indicates an open port
+    # Check SYN-ACK responses
     for sent, received in answered:
         tcp_layer = received.getlayer(TCP)
         if tcp_layer and tcp_layer.flags == 0x12:
             open_ports.append(sent.dport)
-            # Send a RST packet to gracefully close the half-open connection
+            # Send RST to gracefully close the half-open connection
             send(IP(dst=ip)/TCP(dport=sent.dport, flags="R"), verbose=0)
     
-    logging.info("Scapy scan complete on %s, open ports: %s", ip, open_ports)
+    logging.info("Scan complete on %s, open ports: %s", ip, open_ports)
     return open_ports
+
 
 def get_asn_info(ip):
     """Fetch ASN and ISP information using the BGPView API, returning a dict."""

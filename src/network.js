@@ -40,6 +40,99 @@ export class NetworkManager {
     this.fetchNetworkData(); // initial call
     setInterval(() => this.fetchNetworkData(), intervalMs);
   }
+
+  async fetchNodeDetails(targetId) {
+    try {
+      // Simple caching mechanism to reduce redundant calls
+      const cacheKey = `node_details_${targetId}`;
+      const cachedData = sessionStorage.getItem(cacheKey);
+      const now = Date.now();
+      
+      if (cachedData) {
+        const parsed = JSON.parse(cachedData);
+        // Use cached data if it's less than 5 seconds old
+        if (now - parsed.timestamp < 5000) {
+          console.log(`Using cached node details for ${targetId}`);
+          return parsed.data;
+        }
+      }
+      
+      console.log(`Fetching node details for ${targetId}`);
+      
+      // Check if this is a port node (format: IP-port-PORT)
+      const portNodeMatch = targetId.match(/^(.+)-port-(\d+)$/);
+      
+      let response;
+      if (portNodeMatch) {
+        // For port nodes, fetch the parent node details instead
+        const parentId = portNodeMatch[1];
+        const portNumber = portNodeMatch[2];
+        
+        response = await fetch(`${this.endpoint}/node_details?node_id=${parentId}`);
+        
+        if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+        const parentResult = await response.json();
+        
+        if (parentResult.error) {
+          console.error("Error fetching parent node details:", parentResult.error);
+          return { error: parentResult.error };
+        }
+        
+        // Add port-specific data from parent's scan results
+        const portDetails = {
+          ...parentResult,
+          id: targetId,
+          port: portNumber,
+          parentId: parentId,
+          // Extract just the advanced scan results for this specific port
+          advancedResults: []
+        };
+        
+        // Extract port-specific advanced scan results
+        if (parentResult.scans) {
+          portDetails.scans.forEach(scan => {
+            if (scan.advanced && Array.isArray(scan.advanced)) {
+              scan.advanced.forEach(advResult => {
+                if (parseInt(advResult.port, 10) === parseInt(portNumber, 10)) {
+                  portDetails.advancedResults.push(advResult);
+                }
+              });
+            }
+          });
+        }
+        
+        // Cache the result with timestamp
+        sessionStorage.setItem(cacheKey, JSON.stringify({
+          timestamp: now,
+          data: portDetails
+        }));
+        
+        return portDetails;
+      } else {
+        // Regular node details fetching
+        response = await fetch(`${this.endpoint}/node_details?node_id=${targetId}`);
+        
+        if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+        const result = await response.json();
+        
+        if (result.error) {
+          console.error("Error fetching node details:", result.error);
+          return { error: result.error };
+        }
+        
+        // Cache the result with timestamp
+        sessionStorage.setItem(cacheKey, JSON.stringify({
+          timestamp: now,
+          data: result
+        }));
+        
+        return result;
+      }
+    } catch (error) {
+      console.error("Error fetching node details:", error);
+      return { error: "Failed to fetch node details." };
+    }
+  }  
   async fetchAndDisplayScanData(targetIp) {
     try {
         const response = await fetch(`${this.endpoint}/get_scan_data?target_ip=${targetIp}`);
@@ -55,7 +148,25 @@ export class NetworkManager {
         console.error("Error fetching scan data:", error);
         return { error: "Failed to fetch scan data." };
     }
-}  
+  }
+  async fetchAdvancedScanData(targetIp) {
+    try {
+      const response = await fetch(`${this.endpoint}/get_adv_results?target_ip=${targetIp}`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+      const result = await response.json();
+      if (result.error) {
+        console.error("Error fetching advanced scan data:", result.error);
+        return { error: result.error };
+      }
+      // Return an array of advanced result nodes (or an empty array if none)
+      return result.advanced_results || [];
+    } catch (error) {
+      console.error("Error fetching advanced scan data:", error);
+      return { error: "Failed to fetch advanced scan data." };
+    }
+  }  
   // NEW: Method for fetching sensor traffic data for the TrafficMeter
   async fetchTrafficSensorData() {
     try {

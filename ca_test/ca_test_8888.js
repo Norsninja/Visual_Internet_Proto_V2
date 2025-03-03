@@ -21,7 +21,7 @@ async function initScene() {
 
     // Fetch and Add CA Node for 8.8.8.8
     console.log("Requesting CA Node for 8.8.8.8...");
-    const node = await createCANode("1.1.1.1");
+    const node = await createCANode("72.129.14.168");
     scene.add(node);
 
     // Animation Loop

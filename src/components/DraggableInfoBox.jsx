@@ -2,6 +2,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Draggable from 'react-draggable';
 import InfoBox from './infobox.jsx';
+import WebNodeInfoBox from './WebNodeInfoBox.jsx';
+import AsnInfoBox from './AsnInfoBox.jsx';
 
 const DraggableInfoBox = ({ nodeData, scanResults, onAction, targetScreenPos, onPositionChange }) => {
   const [position, setPosition] = useState({
@@ -31,6 +33,11 @@ const DraggableInfoBox = ({ nodeData, scanResults, onAction, targetScreenPos, on
       onPositionChange({ x: rect.left, y: rect.top });
     }
   };
+  
+  // Determine node type
+  const isWebNode = nodeData.layer === 'web';
+  const isAsnNode = nodeData.id && typeof nodeData.id === 'string' && nodeData.id.startsWith('AS');
+  
   // Get the node's color or use a default value
   const nodeColor = nodeData.color || (nodeData.type === "external" ? "red" : "#0099FF");
 
@@ -56,7 +63,25 @@ const DraggableInfoBox = ({ nodeData, scanResults, onAction, targetScreenPos, on
       onStop={(e, data) => onPositionChange && onPositionChange({ x: data.x, y: data.y })}
     >
       <div style={styles.infoBox} ref={nodeRef}>
-        <InfoBox nodeData={nodeData} scanResults={scanResults} onAction={onAction} />
+        {isWebNode ? (
+          <WebNodeInfoBox 
+            nodeData={nodeData} 
+            scanResults={scanResults} 
+            onAction={onAction} 
+          />
+        ) : isAsnNode ? (
+          <AsnInfoBox 
+            nodeData={nodeData} 
+            scanResults={scanResults} 
+            onAction={onAction} 
+          />
+        ) : (
+          <InfoBox 
+            nodeData={nodeData} 
+            scanResults={scanResults} 
+            onAction={onAction} 
+          />
+        )}
       </div>
     </Draggable>
   );

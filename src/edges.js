@@ -16,7 +16,7 @@ export class EdgesManager {
     this.standardEdgeGeometry = new LineSegmentsGeometry();
     this.standardEdgeMaterial = new LineMaterial({
       color: 0xadd8e6,
-      linewidth: 1.5,
+      linewidth: 1.0,
       transparent: true,
       opacity: 0.5,
       resolution: new THREE.Vector2(window.innerWidth, window.innerHeight)
@@ -27,7 +27,7 @@ export class EdgesManager {
     this.webEdgeGeometry = new LineSegmentsGeometry();
     this.webEdgeMaterial = new LineMaterial({
       color: 0xff1493,
-      linewidth: 1.5,
+      linewidth: 0.5,
       transparent: true,
       opacity: 0.8,
       resolution: new THREE.Vector2(window.innerWidth, window.innerHeight)
@@ -343,35 +343,20 @@ export class EdgesManager {
   }
   
   pollTrafficRate() {
-    // Use the existing networkManager to register a callback for traffic data
-    if (window.networkManager) {
-      window.networkManager.registerTrafficCallback(data => {
-        // Calculate intensity based on traffic data
-        const trafficCount = data.traffic ? data.traffic.length : 0;
-        const scaleFactor = 10;
-        const scaledRate = (trafficCount / 100) * scaleFactor;
-        const MAX_RATE = 500000;
-        const intensity = Math.min(scaledRate / MAX_RATE, 1);
-        
-        // Apply the calculated intensity to spawn particles
-        this.spawnLocalTrafficParticles(intensity);
-      });
-    } else {
-      // Fallback to direct API calls if networkManager isn't available
-      console.warn("NetworkManager not found, falling back to direct API calls");
-      setInterval(() => {
-        fetch('http://192.168.0.11:5000/traffic_rate')
-          .then(response => response.json())
-          .then(data => {
-            const scaleFactor = 10;
-            const scaledRate = data.average_rate * scaleFactor;
-            const MAX_RATE = 500000;
-            const intensity = Math.min(scaledRate / MAX_RATE, 1);
-            this.spawnLocalTrafficParticles(intensity);
-          })
-          .catch(err => console.error('Failed to fetch traffic rate:', err));
-      }, 10000);
-    }
+    setInterval(() => {
+      fetch('http://192.168.0.11:5000/traffic_rate')
+        .then(response => response.json())
+        .then(data => {
+          const scaleFactor = 10;
+          const scaledRate = data.average_rate * scaleFactor;
+          console.log("Raw average_rate:", data.average_rate);
+          const MAX_RATE = 500000;
+          const intensity = Math.min(scaledRate / MAX_RATE, 1);
+          console.log("Traffic intensity for local edges:", intensity);
+          this.spawnLocalTrafficParticles(intensity);
+        })
+        .catch(err => console.error('Failed to fetch traffic rate:', err));
+    }, 10000);
   }
 
   // Traffic animation methods

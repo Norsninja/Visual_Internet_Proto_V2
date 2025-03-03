@@ -42,9 +42,9 @@ export class SceneManager {
   }
 
   createStarField() {
-    const starCount = 1000;
+    const starCount = 80000;
     const starGeometry = new THREE.BufferGeometry();
-    const positions = generateStarPositions(starCount, 2000);
+    const positions = generateStarPositions(starCount, 50000);
     starGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     
     const starMaterial = new THREE.PointsMaterial({

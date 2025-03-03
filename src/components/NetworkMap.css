@@ -1,0 +1,86 @@
+/* NetworkMap.css */
+#network-map-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 1000;
+    display: none;
+    font-family: Arial, sans-serif;
+  }
+  
+  #network-map-container svg {
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.9);
+  }
+  
+  #network-map-container text {
+    fill: white;
+    font-size: 12px;
+    pointer-events: none;
+  }
+  
+  #network-map-container line {
+    stroke: rgba(255, 255, 255, 0.5);
+    stroke-width: 1px;
+  }
+  
+  #network-map-container .close-button {
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.2s ease;
+  }
+  
+  #network-map-container .close-button:hover {
+    opacity: 1;
+  }
+  
+  #network-map-container .legend {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 10px;
+    border-radius: 5px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+  }
+  
+  #network-map-container .help-panel {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 15px;
+    border-radius: 5px;
+    color: white;
+    font-size: 14px;
+    max-width: 300px;
+  }
+  
+  #network-map-container .help-panel h3 {
+    margin-top: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+    padding-bottom: 5px;
+  }
+  
+  #network-map-container .help-panel ul {
+    padding-left: 20px;
+    margin: 10px 0;
+  }
+  
+  #network-map-container .node-tooltip {
+    position: absolute;
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    pointer-events: none;
+    max-width: 200px;
+    word-wrap: break-word;
+    z-index: 1001;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }

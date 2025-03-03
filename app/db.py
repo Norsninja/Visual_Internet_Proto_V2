@@ -3,10 +3,11 @@ import time
 import logging
 from scanners import get_gateway, get_local_ip, get_public_ip, get_local_subnet
 from network_scanner import run_arp_scan, run_traceroute, scapy_port_scan, get_asn_info, get_mac
-import schedule
+import json
 from config import external_target
 from labeling import generate_node_label
 import re
+
 # Neo4j connection settings
 NEO4J_URI = "bolt://localhost:7687"
 NEO4J_USER = "neo4j"
@@ -229,7 +230,7 @@ class Neo4jDB:
         if extra_labels is None:
             extra_labels = []
 
-        # ✅ Step 1: Check if a scan of this type already exists for the target
+        # Check for duplicate scans (existing code)
         query_check = """
         MATCH (s:Scan)-[:RESULTS_IN]->(n:NetworkNode {id: $target})
         WHERE s.type = $scan_type
@@ -241,12 +242,12 @@ class Neo4jDB:
 
         if existing_scan:
             print(f"⚠️ Skipping duplicate scan: {scan_type} already exists for {target}")
-            return None  # ✅ Prevent duplicate scan creation
+            return None
 
-        # ✅ Step 2: Generate a unique scan ID
+        # Generate a unique scan ID
         scan_id = f"{scan_type}-{target}-{int(time.time())}"
 
-        # ✅ Step 3: Construct the scan node dictionary
+        # Construct the scan node dictionary
         scan_node = {
             "id": scan_id,
             "type": scan_type,
@@ -254,30 +255,118 @@ class Neo4jDB:
             "timestamp": time.time()
         }
         scan_node.update(additional_properties)
-
-        # ✅ Step 4: Generate a label using a centralized function
         scan_node["label"] = generate_node_label(scan_node)
-
-        # ✅ Step 5: Build query for inserting the scan
         extra_label_str = "".join(f":{label}" for label in extra_labels)
 
         query_scan = f"""
         MERGE (s:Scan{extra_label_str} {{id: $scan_id}})
         SET s += $scan_node
         """
-
-        # ✅ Step 6: Insert the scan and create the relationship
         with self.driver.session() as session:
             session.run(query_scan, scan_id=scan_id, scan_node=scan_node)
 
         self.create_scan_relationship(scan_id, target)
-        
-        # ✅ Step 7: Update the node’s scan completion status
+
+        # If this is a port scan, update the NetworkNode with port info.
+        if scan_type == "portscan":
+            query_update_node = """
+            MATCH (n:NetworkNode {id: $target})
+            SET n.ports = $ports, n.scanned_ports = true
+            """
+            with self.driver.session() as session:
+                session.run(query_update_node, target=target, ports=additional_properties.get("ports", []))
+
         self.update_scan_status(target, scan_type)
 
-        return scan_id  # ✅ Return the scan_id if a new scan was created
+        return scan_id
+    
+    def update_port_scan_advanced_results(self, target_ip, port, scan_type, results):
+        """
+        Updates a PortScan node with advanced scan results.
 
+        :param target_ip: The target IP address
+        :param port: The specific port being scanned
+        :param scan_type: The type of advanced scan (e.g., "bannerGrab", "reverseDNS", "sslInfo", "cveLookup")
+        :param results: The results to store
+        """
+        query = """
+        MATCH (s:Scan {type: 'portscan', target: $target_ip})
+        WITH s, toString($port) + '_' + $scan_type AS key
+        SET s.advanced_results = coalesce(s.advanced_results, {})
+        SET s.advanced_results[key] = $results
+        RETURN s.id
+        """
+
+        with self.driver.session() as session:
+            result = session.run(query, target_ip=target_ip, port=str(port), scan_type=scan_type, results=results)
+            record = result.single()
+            return record["s.id"] if record else None
+
+
+    def store_port_scan_advanced_result(self, target_ip, port, scan_type, results):
+        """
+        Stores an advanced scan result as a separate node and creates a relationship
+        from the most recent PortScan node to this advanced result.
         
+        :param target_ip: The target IP address that was scanned.
+        :param port: The specific port for which the advanced scan was performed.
+        :param scan_type: The type of advanced scan (e.g., "bannerGrab", "reverseDNS", "sslInfo", "cveLookup").
+        :param results: The results data to store (if it's a dict or list, it will be converted to JSON).
+        :return: The ID of the advanced result node, or None if no matching PortScan node was found.
+        """
+        # Step 1: Find the most recent port scan node for the given target IP.
+        query_find = """
+        MATCH (s:Scan {type: 'portscan', target: $target_ip})
+        WITH s ORDER BY s.timestamp DESC LIMIT 1
+        RETURN s.id AS scan_id
+        """
+        with self.driver.session() as session:
+            record = session.run(query_find, target_ip=target_ip).single()
+            if not record:
+                logging.error("No port scan node found for target: %s", target_ip)
+                return None
+            port_scan_id = record["scan_id"]
+        
+        # Step 2: Create a unique ID for the advanced result node.
+        advanced_id = f"advanced_{port_scan_id}_{port}_{scan_type}_{int(time.time())}"
+        
+        # Convert results to a JSON string if it's not already a primitive.
+        if isinstance(results, (dict, list)):
+            results_str = json.dumps(results)
+        else:
+            results_str = results
+
+        # Step 3: Create the AdvancedResult node with its properties.
+        advanced_node = {
+            "id": advanced_id,
+            "target": target_ip,
+            "port": port,
+            "scan_type": scan_type,
+            "results": results_str,
+            "timestamp": time.time(),
+            "label": f"{scan_type} Result"
+        }
+        query_create = """
+        MERGE (a:AdvancedResult {id: $advanced_id})
+        SET a = $advanced_node
+        """
+        with self.driver.session() as session:
+            session.run(query_create, advanced_id=advanced_id, advanced_node=advanced_node)
+        
+        # Step 4: Create a relationship from the PortScan node to this AdvancedResult node.
+        query_rel = """
+        MATCH (s:Scan {id: $port_scan_id})
+        MATCH (a:AdvancedResult {id: $advanced_id})
+        MERGE (s)-[r:HAS_ADVANCED_RESULT]->(a)
+        SET r.timestamp = $timestamp
+        """
+        with self.driver.session() as session:
+            session.run(query_rel, port_scan_id=port_scan_id, advanced_id=advanced_id, timestamp=time.time())
+        
+        return advanced_id
+
+
+                
     def update_scan_status(self, target_ip, scan_type):
         """
         Updates the scan completion status of a NetworkNode.
@@ -288,7 +377,7 @@ class Neo4jDB:
         """
         required_scans = self.get_config_value("required_scans") or []
 
-        # ✅ Step 1: Retrieve existing scan completions and open ports
+        # Step 1: Retrieve existing scan completions and open ports
         query = """
         MATCH (n:NetworkNode {id: $target_ip})
         RETURN n.ports AS ports, n.scans_completed AS scans_completed
@@ -300,7 +389,7 @@ class Neo4jDB:
         if not record:
             return  # No node found, exit early
 
-        ports = record["ports"] or []  # ✅ Get open ports (if they exist)
+        ports = record["ports"] or []  # et open ports (if they exist)
         scans_completed = record["scans_completed"] or []  # ✅ Get completed scans
 
         # ✅ Step 2: Check if port scan was completed
@@ -640,96 +729,57 @@ class Neo4jDB:
             self.create_relationship(rel["source"], rel["target"], rel["type"], rel["properties"])
 
 
+#New fetch node details. this will fetch all the node details and relationships and scan data in one call. we will cache this, and bust it only when new scan data comes in.
+    def fetch_node_details(self, node_id):
+        query = """
+        MATCH (n {id: $node_id})
 
-#     def update_graph_data():
-#         """Scheduled update for network data, runs every 10 seconds."""
-#         now = time.time()
-#         local_ip = get_local_ip()
-#         gateway_ip = get_gateway()
+        /* 1) Gather all scans and their advanced results */
+        OPTIONAL MATCH (n)<-[:RESULTS_IN]-(s:Scan)
+        OPTIONAL MATCH (s)-[:HAS_ADVANCED_RESULT]->(adv:AdvancedResult)
+        WITH n, s, collect(DISTINCT adv { .* }) AS advList
+        /* Now group scans (with their advList) into one collection */
+        WITH n,
+            collect(
+                DISTINCT s {
+                    .*, 
+                    advanced: advList
+                }
+            ) AS scans
 
-#         if gateway_ip == "Unknown":
-#             logging.error("Gateway IP could not be determined, skipping update.")
-#             return
-
-#         existing_router = db.get_node_by_id(gateway_ip)
-#         if existing_router and "open_external_port" in existing_router:
-#             open_external_port = existing_router["open_external_port"]
-#         else:
-#             external_ports = scapy_port_scan(gateway_ip, start_port=20, end_port=1024)
-#             open_external_port = external_ports[0] if external_ports else None
-
-#         # Create router node data with type "router"
-#         router_node = {
-#             "id": gateway_ip,
-#             "type": "router",
-#             "mac_address": get_mac(gateway_ip),
-#             "role": "Router",
-#             "color": "orange",  # Router nodes are orange
-#             "last_seen": now,
-#             "public_ip": get_public_ip(),
-#             "open_external_port": open_external_port
-#         }
-#         # The upsert will call generate_node_label internally.
-#         db.upsert_network_node(router_node)
-#         logging.info(f"Router node updated: {router_node}")
-
-#         # Process Local Devices (from ARP Scan)
-#         devices = run_arp_scan()
-#         local_subnet = get_local_subnet()
-#         for device in devices:
-#             if device not in (local_ip, gateway_ip):
-#                 is_local = local_subnet and device.startswith(local_subnet)
-#                 node_dict = {
-#                     "id": device,
-#                     "type": "device" if is_local else "external",
-#                     "mac_address": get_mac(device),
-#                     "role": "Unknown Device" if is_local else "External Node",
-#                     "color": "#0099FF" if is_local else "red",  # Local devices are blue; external, red
-#                     "last_seen": now
-#                 }
-#                 db.upsert_network_node(node_dict)
-#                 db.create_relationship(gateway_ip, device, "CONNECTED_TO", {"timestamp": now})
-
-#         # Synchronize External Target from Config stored in Neo4j
-#         external_target_config = db.get_config_value("external_target")
-#         if not external_target_config:
-#             external_target_config = external_target  # Fallback to default from config.py
-#             db.set_config_value("external_target", external_target_config)
-
-#         # Process External Nodes (Traceroute Hops)
-#         traceroute_hops = run_traceroute(target=external_target_config)
-#         prev_hop = gateway_ip
-#         for hop in traceroute_hops:
-#             hop_ip = hop["ip"] if isinstance(hop, dict) and "ip" in hop else hop
-#             if hop_ip != gateway_ip:
-#                 node_dict = {
-#                     "id": hop_ip,
-#                     "type": "external",
-#                     "mac_address": "Unavailable (External)",
-#                     "role": "External Node",
-#                     "color": "red",  # External nodes are red
-#                     "last_seen": now,
-#                     "tracerouted": (hop_ip == external_target_config)
-#                 }
-#                 # Optionally include ASN info if available (only after a BGP scan)
-#                 asn_info = get_asn_info(hop_ip)
-#                 if asn_info:
-#                     node_dict["asn_info"] = asn_info
-#                 db.upsert_network_node(node_dict)
-#                 db.create_relationship(prev_hop, hop_ip, "TRACEROUTE_HOP", {"timestamp": now, "traceroute_mode": "local"})
-#                 prev_hop = hop_ip
-
-#         logging.info("Graph data successfully updated.")
-
-#     # Schedule update to run every 10 seconds
-#     schedule.every(10).seconds.do(update_graph_data)
+        /* 2) Gather traffic edges from n -> other */
+        OPTIONAL MATCH (n)-[t:TRAFFIC]->(other)
+        WITH n, scans,
+        // Collect all traffic edges, but only keep objects where 'other' isn't null
+        [ x IN collect(
+            CASE WHEN t IS NOT NULL THEN {
+                other: other.id,
+                proto: t.proto,
+                size: t.size,
+                last_seen: t.timestamp
+            } END
+            )
+            WHERE x IS NOT NULL  // filter out any null elements
+        ] AS trafficList
 
 
-# def run_scheduled_tasks():
-#     """Continuously run scheduled tasks (used in app.py)."""
-#     while True:
-#         schedule.run_pending()
-#         time.sleep(1)
+        /* 3) Gather traceroute hops by traversing any :TRACEROUTE_HOP paths */
+        OPTIONAL MATCH path=(n)-[:TRACEROUTE_HOP*]->(hop)
+        WITH n, scans, trafficList,
+            collect(DISTINCT hop.id) AS tracerouteIds
+
+        /* 4) Return a single object with all properties + aggregated data */
+        RETURN n {
+            .*,
+            scans: scans,
+            traffic: trafficList,
+            tracerouteHops: tracerouteIds
+        } AS nodeDetails
+        """
+
+        with self.driver.session() as session:
+            record = session.run(query, node_id=node_id).single()
+            return record["nodeDetails"] if record and record["nodeDetails"] else None
 
 # Initialize the Neo4j database instance
 db = Neo4jDB()

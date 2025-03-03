@@ -11,6 +11,7 @@ import { EventsManager } from '../events.js';
 import { NetworkManager } from '../network.js';
 import { TrafficMeter } from '../ui/traffic_meter.js';
 import { Group } from '@tweenjs/tween.js';
+// Import NetworkMap dynamically when needed (not immediately)
 
 const ThreeCanvas = ({ onReady }) => {
   const containerRef = useRef();
@@ -84,9 +85,10 @@ const ThreeCanvas = ({ onReady }) => {
     // Expose renderer for the UI
     if (onReady) onReady({ renderer });
 
-    // Animation loop
+    // Modified animation loop - exposed globally for pausing/resuming
     const animate = (time) => {
-      requestAnimationFrame(animate);
+      // Store animation frame ID globally for cancellation
+      window.animationFrameId = requestAnimationFrame(animate);
       const delta = time * 0.001;
 
       // Compute network metrics (if needed for background animations)
@@ -108,18 +110,43 @@ const ThreeCanvas = ({ onReady }) => {
       renderer.render(scene, window.camera);
       ship.updateCockpitControls(delta);
     };
-    animate();
+    
+    // Expose animation function globally
+    window.animate = animate;
+    
+    // Start the animation loop
+    animate(0);
+    
+    // Initialize TrafficMeter
     TrafficMeter();
+    
     // Cleanup on unmount
     return () => {
+      // Clean up event listeners
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('keyup', handleKeyUp);
-      container.removeChild(renderer.domElement);
+      
+      // Remove renderer
+      if (container && renderer.domElement) {
+        container.removeChild(renderer.domElement);
+      }
+      
+      // Dispose renderer
       renderer.dispose();
+      
+      // Cancel animation frame
+      if (window.animationFrameId) {
+        cancelAnimationFrame(window.animationFrameId);
+      }
+      
+      // Clean up network map if it exists
+      if (window.networkMap && typeof window.networkMap.destroy === 'function') {
+        window.networkMap.destroy();
+      }
     };
   }, [onReady]);
 
-  return <div ref={containerRef} style={{ width: '100vw', height: '100vh' }} />;
+  return <div id="threejs-container" ref={containerRef} style={{ width: '100vw', height: '100vh' }} />;
 };
 
 export default ThreeCanvas;

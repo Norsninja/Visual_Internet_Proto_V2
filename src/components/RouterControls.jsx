@@ -1,11 +1,29 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 const RouterControls = ({ onAction, externalNetwork }) => {
+  // Log when the component mounts and renders to help debug
+  useEffect(() => {
+    console.log("RouterControls mounted with externalNetwork:", externalNetwork);
+  }, [externalNetwork]);
+
   const [showSelector, setShowSelector] = useState(false);
   const [selectedValue, setSelectedValue] = useState("8.8.8.8");
   const [customValue, setCustomValue] = useState("");
 
+  // Set initial value based on current externalNetwork if available
+  useEffect(() => {
+    if (externalNetwork) {
+      if (["8.8.8.8", "1.1.1.1", "208.67.222.222"].includes(externalNetwork)) {
+        setSelectedValue(externalNetwork);
+      } else {
+        setSelectedValue("custom");
+        setCustomValue(externalNetwork);
+      }
+    }
+  }, [externalNetwork]);
+
   const toggleSelector = () => {
+    console.log("Toggle selector called, current state:", showSelector);
     setShowSelector(!showSelector);
   };
 
@@ -19,7 +37,10 @@ const RouterControls = ({ onAction, externalNetwork }) => {
 
   const handleSubmit = () => {
     const target = selectedValue === "custom" ? customValue : selectedValue;
+    console.log("Submitting external network:", target);
     onAction("submitExternalNetwork", target);
+    // Close the selector after submission
+    setShowSelector(false);
   };
 
   const handleRemoteTraceroute = () => {
@@ -28,15 +49,23 @@ const RouterControls = ({ onAction, externalNetwork }) => {
 
   return (
     <div style={styles.container}>
-      <button style={styles.button} onClick={toggleSelector}>Change External Network</button>
+      <button style={styles.button} onClick={toggleSelector}>
+        {showSelector ? "Cancel" : "Change External Network"}
+      </button>
+      
       {showSelector && (
         <div style={styles.selectorContainer}>
-          <select style={styles.select} onChange={handleDropdownChange} value={selectedValue}>
+          <select 
+            style={styles.select} 
+            onChange={handleDropdownChange} 
+            value={selectedValue}
+          >
             <option value="8.8.8.8">Google DNS (8.8.8.8)</option>
             <option value="1.1.1.1">Cloudflare (1.1.1.1)</option>
             <option value="208.67.222.222">OpenDNS (208.67.222.222)</option>
             <option value="custom">Custom...</option>
           </select>
+          
           {selectedValue === "custom" && (
             <input
               type="text"
@@ -46,10 +75,14 @@ const RouterControls = ({ onAction, externalNetwork }) => {
               onChange={handleCustomChange}
             />
           )}
+          
           <button style={styles.button} onClick={handleSubmit}>Submit</button>
         </div>
       )}
-      <button style={styles.button} onClick={handleRemoteTraceroute}>Run Remote Traceroute</button>
+      
+      <button style={styles.button} onClick={handleRemoteTraceroute}>
+        Run Remote Traceroute
+      </button>
     </div>
   );
 };

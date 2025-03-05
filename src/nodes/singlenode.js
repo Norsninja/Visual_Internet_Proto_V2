@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SimplexNoise } from 'three/examples/jsm/math/SimplexNoise.js';
+import { createMysteriousMaterial } from '../mysteriousMaterial';
 
 function hashIP(ip) {
   let hash = 0;
@@ -44,6 +45,7 @@ export function generateMaterial(type, color, seed) {
   });
 }
 
+// Export the original createNodeMesh function so it can be enhanced by modifyCreateNodeMesh
 export function createNodeMesh(nodeState) {
   const seed = hashIP(nodeState.id);
   const scale = window.NODE_SCALE || 1;
@@ -57,22 +59,37 @@ export function createNodeMesh(nodeState) {
       geometry = generateDistortedGeometry(seed, nodeState.type, scale);
   }
 
-  let finalColor;
-  if (String(nodeState.id).startsWith("AS")) {
-      finalColor = new THREE.Color("#FFD700"); // Yellow for ASN nodes
-  } else if (nodeState.layer === 'web') {
-      finalColor = new THREE.Color("#ff69b4");
-  } else if (nodeState.fully_scanned) {
-      finalColor = new THREE.Color("#00FF00"); // ✅ Fully scanned nodes are green
+  let material;
+  
+  // Check if this is an unexplored external node (has no "found" property)
+  const isUnexploredExternal = nodeState.type === "external" && !nodeState.found;
+  
+  if (isUnexploredExternal) {
+    // Create mysterious material for unexplored external nodes
+    material = createMysteriousMaterial();
+    // Register with the mysterious nodes manager for updates
+
   } else {
-      finalColor = new THREE.Color(nodeState.color || (nodeState.type === "external" ? "red" : "#0099FF"));
+    // Use the standard material for other nodes
+    let finalColor;
+    if (String(nodeState.id).startsWith("AS")) {
+        finalColor = new THREE.Color("#FFD700"); // Yellow for ASN nodes
+    } else if (nodeState.layer === 'web') {
+        finalColor = new THREE.Color("#ff69b4");
+    } else if (nodeState.fully_scanned) {
+        finalColor = new THREE.Color("#00FF00"); // ✅ Fully scanned nodes are green
+    } else {
+        finalColor = new THREE.Color(nodeState.color || (nodeState.type === "external" ? "red" : "#0099FF"));
+    }
+    
+    material = generateMaterial(nodeState.type, finalColor, seed);
   }
 
-  const material = generateMaterial(nodeState.type, finalColor, seed);
   const mesh = new THREE.Mesh(geometry, material);
-
-  mesh.userData = { ...nodeState, seed };
-
+  mesh.userData = { ...nodeState, seed, isUnexploredExternal };
+  if (isUnexploredExternal && window.mysteriousNodesManager) {
+    window.mysteriousNodesManager.registerNode(mesh);
+  }
   if (nodeState.layer === 'web' && nodeState.parentId) {
       const parentMesh = window.nodesManager.getNodeById(nodeState.parentId);
       if (parentMesh) {
@@ -93,6 +110,3 @@ export function createNodeMesh(nodeState) {
 
   return mesh;
 }
-
-
-  

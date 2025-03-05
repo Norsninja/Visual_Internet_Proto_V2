@@ -631,7 +631,7 @@ def register_routes(app):
         node_id = request.args.get('node_id')
         if not node_id:
             return jsonify({"error": "Missing node_id"}), 400
-
+        db.mark_node_as_found(node_id)
         node_data = get_node_details_cached(node_id)
         if not node_data:
             return jsonify({"error": f"No node found with id {node_id}"}), 404
@@ -643,189 +643,190 @@ def register_routes(app):
     # routes.py - add this new endpoint
 
 
-    # @app.route('/node_genes', methods=['GET'])
-    # def get_node_genes():
-    #     """
-    #     Retrieve genetic traits for a network node.
-    #     These genes determine the node's CA behavior and visual properties.
-    #     """
-    #     node_id = request.args.get('node_id')
-    #     if not node_id:
-    #         return jsonify({"error": "Missing node_id parameter"}), 400
+    @app.route('/node_genes', methods=['GET'])
+    def get_node_genes():
+        """
+        Retrieve genetic traits for a network node.
+        These genes determine the node's CA behavior and visual properties.
+        """
+        node_id = request.args.get('node_id')
+        if not node_id:
+            return jsonify({"error": "Missing node_id parameter"}), 400
         
-    #     try:
-    #         # Get or generate genes for this node
-    #         genes = gene_system.get_node_genes(node_id)
+        try:
+            # Get or generate genes for this node
+            genes = gene_system.get_node_genes(node_id)
             
-    #         # Check if forcing evolution was requested
-    #         evolve_with = request.args.get('evolve_with')
-    #         interaction_type = request.args.get('interaction_type', 'CONNECTED_TO')
+            # Check if forcing evolution was requested
+            evolve_with = request.args.get('evolve_with')
+            interaction_type = request.args.get('interaction_type', 'CONNECTED_TO')
             
-    #         if evolve_with:
-    #             # Trigger gene evolution with the specified node
-    #             success = gene_system.evolve_genes_from_interaction(
-    #                 node_id, evolve_with, interaction_type
-    #             )
+            if evolve_with:
+                # Trigger gene evolution with the specified node
+                success = gene_system.evolve_genes_from_interaction(
+                    node_id, evolve_with, interaction_type
+                )
                 
-    #             if success:
-    #                 # Fetch updated genes after evolution
-    #                 genes = gene_system.get_node_genes(node_id)
+                if success:
+                    # Fetch updated genes after evolution
+                    genes = gene_system.get_node_genes(node_id)
                     
-    #                 return jsonify({
-    #                     "node_id": node_id,
-    #                     "genes": genes,
-    #                     "evolution": {
-    #                         "partner": evolve_with,
-    #                         "interaction_type": interaction_type,
-    #                         "success": True
-    #                     }
-    #                 })
-    #             else:
-    #                 return jsonify({
-    #                     "node_id": node_id,
-    #                     "genes": genes,
-    #                     "evolution": {
-    #                         "partner": evolve_with,
-    #                         "interaction_type": interaction_type,
-    #                         "success": False,
-    #                         "message": "Evolution failed or was too weak to produce changes"
-    #                     }
-    #                 })
+                    return jsonify({
+                        "node_id": node_id,
+                        "genes": genes,
+                        "evolution": {
+                            "partner": evolve_with,
+                            "interaction_type": interaction_type,
+                            "success": True
+                        }
+                    })
+                else:
+                    return jsonify({
+                        "node_id": node_id,
+                        "genes": genes,
+                        "evolution": {
+                            "partner": evolve_with,
+                            "interaction_type": interaction_type,
+                            "success": False,
+                            "message": "Evolution failed or was too weak to produce changes"
+                        }
+                    })
             
-    #         # Standard response without evolution
-    #         return jsonify({
-    #             "node_id": node_id,
-    #             "genes": genes
-    #         })
+            # Standard response without evolution
+            return jsonify({
+                "node_id": node_id,
+                "genes": genes
+            })
         
-    #     except Exception as e:
-    #         logging.error(f"Error processing node genes for {node_id}: {str(e)}")
-    #         return jsonify({
-    #             "error": f"Failed to process node genes: {str(e)}"
-    #         }), 500
+        except Exception as e:
+            logging.error(f"Error processing node genes for {node_id}: {str(e)}")
+            return jsonify({
+                "error": f"Failed to process node genes: {str(e)}"
+            }), 500
 
-    # @app.route('/node_genes/evolve', methods=['POST'])
-    # def trigger_gene_evolution():
-    #     """
-    #     Explicitly trigger gene evolution between two nodes.
-    #     This endpoint can be used to force gene sharing between any two nodes.
-    #     """
-    #     data = request.get_json()
+    @app.route('/node_genes/evolve', methods=['POST'])
+    def trigger_gene_evolution():
+        """
+        Explicitly trigger gene evolution between two nodes.
+        This endpoint can be used to force gene sharing between any two nodes.
+        """
+        data = request.get_json()
         
-    #     source_id = data.get('source_id')
-    #     target_id = data.get('target_id')
-    #     interaction_type = data.get('interaction_type', 'CONNECTED_TO')
+        source_id = data.get('source_id')
+        target_id = data.get('target_id')
+        interaction_type = data.get('interaction_type', 'CONNECTED_TO')
         
-    #     if not source_id or not target_id:
-    #         return jsonify({"error": "Missing source_id or target_id"}), 400
+        if not source_id or not target_id:
+            return jsonify({"error": "Missing source_id or target_id"}), 400
         
-    #     try:
-    #         # Trigger gene evolution
-    #         success = gene_system.evolve_genes_from_interaction(
-    #             source_id, target_id, interaction_type
-    #         )
+        try:
+            # Trigger gene evolution
+            success = gene_system.evolve_genes_from_interaction(
+                source_id, target_id, interaction_type
+            )
             
-    #         if success:
-    #             # Fetch updated genes for both nodes
-    #             source_genes = gene_system.get_node_genes(source_id)
-    #             target_genes = gene_system.get_node_genes(target_id)
+            if success:
+                # Fetch updated genes for both nodes
+                source_genes = gene_system.get_node_genes(source_id)
+                target_genes = gene_system.get_node_genes(target_id)
                 
-    #             return jsonify({
-    #                 "success": True,
-    #                 "source": {
-    #                     "id": source_id,
-    #                     "genes": source_genes
-    #                 },
-    #                 "target": {
-    #                     "id": target_id,
-    #                     "genes": target_genes
-    #                 },
-    #                 "interaction_type": interaction_type
-    #             })
-    #         else:
-    #             return jsonify({
-    #                 "success": False,
-    #                 "message": "Evolution failed or was too weak to produce changes",
-    #                 "source_id": source_id,
-    #                 "target_id": target_id,
-    #                 "interaction_type": interaction_type
-    #             })
+                return jsonify({
+                    "success": True,
+                    "source": {
+                        "id": source_id,
+                        "genes": source_genes
+                    },
+                    "target": {
+                        "id": target_id,
+                        "genes": target_genes
+                    },
+                    "interaction_type": interaction_type
+                })
+            else:
+                return jsonify({
+                    "success": False,
+                    "message": "Evolution failed or was too weak to produce changes",
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "interaction_type": interaction_type
+                })
         
-    #     except Exception as e:
-    #         logging.error(f"Error during gene evolution: {str(e)}")
-    #         return jsonify({
-    #             "success": False,
-    #             "error": f"Failed to evolve genes: {str(e)}"
-    #         }), 500
+        except Exception as e:
+            logging.error(f"Error during gene evolution: {str(e)}")
+            return jsonify({
+                "success": False,
+                "error": f"Failed to evolve genes: {str(e)}"
+            }), 500
 
-    # @app.route('/node_genes/related', methods=['GET'])
-    # def get_genetically_related_nodes():
-    #     """
-    #     Find nodes that share genetic heritage with the specified node.
-    #     This can be used to visualize gene propagation throughout the network.
-    #     """
-    #     node_id = request.args.get('node_id')
-    #     if not node_id:
-    #         return jsonify({"error": "Missing node_id parameter"}), 400
+    @app.route('/node_genes/related', methods=['GET'])
+    def get_genetically_related_nodes():
+        """
+        Find nodes that share genetic heritage with the specified node.
+        This can be used to visualize gene propagation throughout the network.
+        """
+        node_id = request.args.get('node_id')
+        if not node_id:
+            return jsonify({"error": "Missing node_id parameter"}), 400
         
-    #     try:
-    #         # Get genes for this node
-    #         genes = gene_system.get_node_genes(node_id)
+        try:
+            # Get genes for this node
+            genes = gene_system.get_node_genes(node_id)
             
-    #         if not genes:
-    #             return jsonify({
-    #                 "node_id": node_id,
-    #                 "related_nodes": [],
-    #                 "message": "No genes found for this node"
-    #             })
+            if not genes:
+                return jsonify({
+                    "node_id": node_id,
+                    "related_nodes": [],
+                    "message": "No genes found for this node"
+                })
             
-    #         # Extract parent IDs from metadata
-    #         parent_ids = genes["metadata"].get("parent_ids", [])
+            # Extract parent IDs from metadata
+            parent_ids = genes["metadata"].get("parent_ids", [])
             
-    #         # Query Neo4j for nodes with a genetic relationship
-    #         query = """
-    #         MATCH (n {id: $node_id})
-    #         OPTIONAL MATCH (n)-[r]->(related)
-    #         WHERE r.type IN ['CONNECTED_TO', 'HOSTS', 'TRACEROUTE_HOP', 'BGP_PEER']
+            # Query Neo4j for nodes with a genetic relationship
+            query = """
+            MATCH (n {id: $node_id})
+            OPTIONAL MATCH (n)-[r]->(related)
+            WHERE r.type IN ['CONNECTED_TO', 'HOSTS', 'TRACEROUTE_HOP', 'BGP_PEER']
             
-    #         WITH related
-    #         WHERE related.genes IS NOT NULL
+            WITH related
+            WHERE related.genes IS NOT NULL
             
-    #         RETURN related.id AS related_id, 
-    #             related.genes AS genes,
-    #             related.type AS node_type
-    #         """
+            RETURN related.id AS related_id, 
+                related.genes AS genes,
+                related.type AS node_type
+            """
             
-    #         related_nodes = []
-    #         with db.driver.session() as session:
-    #             result = session.run(query, node_id=node_id)
+            related_nodes = []
+            with db.driver.session() as session:
+                result = session.run(query, node_id=node_id)
                 
-    #             for record in result:
-    #                 related_id = record["related_id"]
-    #                 related_genes = json.loads(record["genes"])
+                for record in result:
+                    related_id = record["related_id"]
+                    related_genes = json.loads(record["genes"])
                     
-    #                 # Calculate genetic similarity
-    #                 similarity = gene_system.calculate_genetic_similarity(genes, related_genes)
+                    # Calculate genetic similarity
+                    similarity = gene_system.calculate_genetic_similarity(genes, related_genes)
                     
-    #                 related_nodes.append({
-    #                     "id": related_id,
-    #                     "type": record["node_type"],
-    #                     "genetic_similarity": similarity,
-    #                     "is_parent": related_id in parent_ids,
-    #                     "shared_traits": gene_system.identify_shared_traits(genes, related_genes)
-    #                 })
+                    related_nodes.append({
+                        "id": related_id,
+                        "type": record["node_type"],
+                        "genetic_similarity": similarity,
+                        "is_parent": related_id in parent_ids,
+                        "shared_traits": gene_system.identify_shared_traits(genes, related_genes)
+                    })
             
-    #         # Sort by genetic similarity
-    #         related_nodes.sort(key=lambda x: x["genetic_similarity"], reverse=True)
+            # Sort by genetic similarity
+            related_nodes.sort(key=lambda x: x["genetic_similarity"], reverse=True)
             
-    #         return jsonify({
-    #             "node_id": node_id,
-    #             "generation": genes["metadata"].get("generation", 1),
-    #             "related_nodes": related_nodes
-    #         })
+            return jsonify({
+                "node_id": node_id,
+                "generation": genes["metadata"].get("generation", 1),
+                "related_nodes": related_nodes
+            })
         
-    #     except Exception as e:
-    #         logging.error(f"Error finding related nodes for {node_id}: {str(e)}")
-    #         return jsonify({
-    #             "error": f"Failed to find genetically related nodes: {str(e)}"
-    #         }), 500
+        except Exception as e:
+            logging.error(f"Error finding related nodes for {node_id}: {str(e)}")
+            return jsonify({
+                "error": f"Failed to find genetically related nodes: {str(e)}"
+            }), 500
+        

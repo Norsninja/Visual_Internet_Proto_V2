@@ -1,9 +1,11 @@
 import * as THREE from 'three';
-import { createNodeMesh } from './singlenode.js';
+import { createNodeMesh as originalCreateNodeMesh, generateMaterial } from './singlenode.js';
 import * as overlayManager from '../overlayManager.js';
 import { GraphState } from './state.js';
 import { PhysicsEngine } from '../physicsEngine.js';
-
+import { updateNodeToCAMaterial, cleanupCANodes } from './CA_node_material.js';
+import { createMysteriousMaterial, disposeMysteriousMaterial } from '../mysteriousMaterial.js';
+// We'll use the original function directly and apply CA material afterward
 export class NodesManager {
   constructor(scene) {
     this.scene = scene;
@@ -21,26 +23,83 @@ export class NodesManager {
   // Update nodes with the ability to selectively mark changes
   updateNodes(nodesData, edgesData) {
     nodesData.forEach(nodeData => {
+      const existingNode = this.state.getNode(nodeData.id);
+      const wasFullyScanned = existingNode?.fully_scanned || false;
+      const isNowFullyScanned = nodeData.fully_scanned || false;
+      
       this.state.addOrUpdateNode(nodeData);
       // Mark this node as changed
       this.changedNodes.add(nodeData.id);
+      
+      // Check if the node became fully scanned and needs CA material
+      if (!wasFullyScanned && isNowFullyScanned) {
+        const nodeMesh = this.nodeRegistry.get(nodeData.id);
+        if (nodeMesh && !nodeMesh.userData.caEnabled) {
+          // Instead of immediately updating, we'll do it after reconcile
+          nodeMesh.userData.needsCAUpdate = true;
+        }
+      }
     });
+    
     // Only update nodes that are in the changedNodes set
     this.reconcileSceneMeshes();
     this.updatePhysicsEngine(edgesData);
+    
+    // After reconciliation, check for nodes that need CA update
+    this.applyPendingCAUpdates();
+    
     // Clear the set after reconciling
     this.changedNodes.clear();
+  }
+
+  // Apply CA material updates after all nodes are reconciled
+  applyPendingCAUpdates() {
+    // Get all nodes that need CA update
+    const nodesToUpdate = Array.from(this.nodeRegistry.values()).filter(
+      mesh => mesh.userData.needsCAUpdate && !mesh.userData.caEnabled && !mesh.userData.caProcessing
+    );
+    
+    // Log how many nodes need updates
+    if (nodesToUpdate.length > 0) {
+      console.log(`Scheduling CA updates for ${nodesToUpdate.length} nodes`);
+    }
+    
+    // Process nodes with a maximum batch size to prevent thundering herd
+    const batchSize = 1; // Process up to 3 nodes per frame
+    
+    // Process a limited batch of nodes
+    nodesToUpdate.slice(0, batchSize).forEach(mesh => {
+      mesh.userData.needsCAUpdate = false;
+      mesh.userData.caProcessing = true;
+      
+      // Update to CA material asynchronously
+      updateNodeToCAMaterial(mesh)
+        .then(() => {
+          console.log(`CA material applied to node: ${mesh.userData.id}`);
+        })
+        .catch(err => {
+          console.error(`Failed to apply CA material to node: ${mesh.userData.id}`, err);
+          // Reset flags on error for retry
+          mesh.userData.caProcessing = false;
+          mesh.userData.needsCAUpdate = true;
+        });
+    });
+    
+    // If there are more nodes to update, schedule another update on the next frame
+    if (nodesToUpdate.length > batchSize) {
+      requestAnimationFrame(() => this.applyPendingCAUpdates());
+    }
   }
 
   // Reconcile only changed nodes rather than all nodes
   reconcileSceneMeshes() {
     // If no specific nodes are marked, default to updating all nodes
     const nodeStates = this.changedNodes.size > 0
-      ? Array.from(this.changedNodes).map(id => this.state.getNode(id))
+      ? Array.from(this.changedNodes).map(id => this.state.getNode(id)).filter(Boolean)
       : this.state.getAllNodes();
-
+  
     const routerMesh = this.getNodeById("router");
-
+  
     nodeStates.forEach(nodeState => {
       // Skip nodes that represent scans
       if (
@@ -56,7 +115,12 @@ export class NodesManager {
         return;
       }    
       let mesh = this.nodeRegistry.get(nodeState.id);
-
+  
+      // Check if this node is transitioning from unexplored to found
+      const wasUnexplored = mesh?.userData?.isUnexploredExternal === true;
+      const isNowFound = nodeState.found !== undefined;
+      const transitionToFound = wasUnexplored && isNowFound;
+  
       if (!mesh) {
         if (!nodeState.position && nodeState.layer !== "web") {
           if (nodeState.type === "router") {
@@ -82,13 +146,43 @@ export class NodesManager {
           }
         }
         // Create a new mesh
-        mesh = createNodeMesh(nodeState);
+        mesh = originalCreateNodeMesh(nodeState);
         this.scene.add(mesh);
         this.nodeRegistry.set(nodeState.id, mesh);
         this.nodeCreationListeners.forEach(listener => listener(nodeState.id, mesh));
+        
+        // If the node is fully scanned, mark it for CA update
+        if (nodeState.fully_scanned) {
+          mesh.userData.needsCAUpdate = true;
+        }
       } else {
-        // Update existing mesh's userData and properties
+        // Update existing mesh's userData with new state data
         Object.assign(mesh.userData, nodeState);
+        
+        // Handle transition from unexplored to found
+        if (transitionToFound) {
+          // Unregister from mysterious nodes manager
+          if (window.mysteriousNodesManager) {
+            window.mysteriousNodesManager.unregisterNode(mesh);
+          }
+          
+          // Create a standard material to replace the mysterious one
+          const newColor = nodeState.color || (nodeState.type === "external" ? "red" : "#0099FF");
+          const newMaterial = generateMaterial(nodeState.type, newColor, mesh.userData.seed);
+          
+          // Apply the new material
+          if (mesh.material && mesh.material.userData.isMysteriousMaterial) {
+            disposeMysteriousMaterial(mesh.material);
+          }
+          mesh.material = newMaterial;
+          
+          // Update flags
+          mesh.userData.isUnexploredExternal = false;
+          
+          // Create a flash effect to highlight the transition
+          createTransitionEffect(mesh);
+        }
+        
         if (nodeState.position) {
           mesh.position.copy(nodeState.position);
         } else if (nodeState.layer === "web" && nodeState.parentId) {
@@ -100,9 +194,9 @@ export class NodesManager {
             const zOffset = (Math.random() - 0.5) * 10;
             
             mesh.position.set(
-              radius * Math.cos(angle),
-              radius * Math.sin(angle),
-              zOffset
+              parentNode.position.x + radius * Math.cos(angle),
+              parentNode.position.y + radius * Math.sin(angle),
+              parentNode.position.z + zOffset
             );
             
             // Store world position for edge reference
@@ -111,20 +205,27 @@ export class NodesManager {
             mesh.getWorldPosition(mesh.userData.worldPosition);
           }
         }
+        
+        // Check if node has become fully scanned
+        if (nodeState.fully_scanned && !mesh.userData.caEnabled && !mesh.userData.caProcessing) {
+          mesh.userData.needsCAUpdate = true;
+        }
       }
-
-      // Update mesh material based on scan status
-      if (nodeState.fully_scanned) {
-        mesh.material.color.set("#00FF00");
-        mesh.material.emissive.set("#008000");
-        mesh.material.emissiveIntensity = 0.5;
-      } else {
-        mesh.material.color.set(nodeState.color || (nodeState.type === "external" ? "red" : "#0099FF"));
+  
+      // Update mesh material based on scan status if not using CA material or mysterious material
+      if (!mesh.userData.isUnexploredExternal) {
+        if (nodeState.fully_scanned && !mesh.userData.caEnabled) {
+          mesh.material.color.set("#00FF00");
+          mesh.material.emissive = mesh.material.emissive || new THREE.Color("#008000");
+          mesh.material.emissiveIntensity = 0.5;
+        } else if (!nodeState.fully_scanned && !mesh.userData.caEnabled) {
+          mesh.material.color.set(nodeState.color || (nodeState.type === "external" ? "red" : "#0099FF"));
+        }
       }
-
+  
       // Update overlays
       overlayManager.updateOverlays(mesh);
-
+  
       // Spawn child nodes for open ports if necessary
       if (mesh.userData.ports && mesh.userData.ports.length > 0) {
         if (!mesh.getObjectByName(`${mesh.userData.id}-port-${mesh.userData.ports[0]}`)) {
@@ -220,4 +321,33 @@ export class NodesManager {
     }
     return node;
   }
+  
+  // Add method to clean up when nodes are removed
+  removeNode(nodeId) {
+    const node = this.getNodeById(nodeId);
+    if (node) {
+      this.scene.remove(node);
+      this.nodeRegistry.delete(nodeId);
+      
+      // Clean up CA nodes
+      cleanupCANodes();
+    }
+  }
+}
+function createTransitionEffect(mesh) {
+  // Just pulse the material's emissive property
+  const originalColor = mesh.material.color.clone();
+  const originalEmissive = mesh.material.emissive ? mesh.material.emissive.clone() : new THREE.Color(0);
+  const originalEmissiveIntensity = mesh.material.emissiveIntensity || 0;
+  
+  // Set initial flash state
+  mesh.material.emissive = new THREE.Color(0xffffff);
+  mesh.material.emissiveIntensity = 1.0;
+  
+  // Simple timeout to restore original appearance
+  setTimeout(() => {
+    mesh.material.color = originalColor;
+    mesh.material.emissive = originalEmissive;
+    mesh.material.emissiveIntensity = originalEmissiveIntensity;
+  }, 500);
 }

@@ -176,6 +176,7 @@ export class EdgesManager {
   // Rebuild standard edges geometry
   rebuildStandardEdgeGeometry() {
     const positions = [];
+    const colors = [];
     
     for (const [key, edgeObj] of this.edgeRegistry.entries()) {
       if (edgeObj.layer === 'web') continue;
@@ -192,19 +193,33 @@ export class EdgesManager {
         sourcePos.x, sourcePos.y, sourcePos.z,
         targetPos.x, targetPos.y, targetPos.z
       );
+      
+      // Get edge color (default to light blue if not specified)
+      const edgeColor = new THREE.Color(edgeObj.color || 0xadd8e6);
+      
+      // Add the same color for both vertices of this edge segment
+      colors.push(
+        edgeColor.r, edgeColor.g, edgeColor.b,
+        edgeColor.r, edgeColor.g, edgeColor.b
+      );
     }
     
     if (positions.length > 0) {
       this.standardEdgeGeometry.dispose();
       this.standardEdgeGeometry = new LineSegmentsGeometry();
       this.standardEdgeGeometry.setPositions(positions);
+      this.standardEdgeGeometry.setColors(colors); // Set vertex colors
       this.standardEdgeObject.geometry = this.standardEdgeGeometry;
+      
+      // Update material to use vertex colors
+      this.standardEdgeMaterial.vertexColors = true;
     }
   }
   
   // Rebuild web edges geometry
   rebuildWebEdgeGeometry() {
     const positions = [];
+    const colors = [];
     
     for (const [key, edgeObj] of this.edgeRegistry.entries()) {
       if (edgeObj.layer !== 'web') continue;
@@ -221,13 +236,26 @@ export class EdgesManager {
         sourcePos.x, sourcePos.y, sourcePos.z,
         targetPos.x, targetPos.y, targetPos.z
       );
+      
+      // Get edge color (default to deep pink if not specified)
+      const edgeColor = new THREE.Color(edgeObj.color || 0xff1493); // Default web edge color
+      
+      // Add the same color for both vertices of this edge segment
+      colors.push(
+        edgeColor.r, edgeColor.g, edgeColor.b,
+        edgeColor.r, edgeColor.g, edgeColor.b
+      );
     }
     
     if (positions.length > 0) {
       this.webEdgeGeometry.dispose();
       this.webEdgeGeometry = new LineSegmentsGeometry();
       this.webEdgeGeometry.setPositions(positions);
+      this.webEdgeGeometry.setColors(colors); // Set vertex colors
       this.webEdgeObject.geometry = this.webEdgeGeometry;
+      
+      // Update material to use vertex colors
+      this.webEdgeMaterial.vertexColors = true;
     }
   }
   

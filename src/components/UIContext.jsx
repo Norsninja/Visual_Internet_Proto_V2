@@ -1,74 +1,69 @@
-// UIContext.jsx
-import React, { createContext, useState, useContext, useCallback } from 'react';
+// components/UIContext.jsx
+import React, { createContext, useState, useRef, useContext } from 'react';
 
 export const UIContext = createContext();
 
+// Add this custom hook for easier context consumption
+export const useUI = () => {
+  return useContext(UIContext);
+};
+
 export const UIProvider = ({ children }) => {
   const [selectedNode, setSelectedNode] = useState(null);
-  const [scanResults, setScanResults] = useState({
-    loading: true,
-    error: null,
-    data: [],
-  });
-  const [advancedResults, setAdvancedResults] = useState({
-    loading: false,
-    error: null,
-    data: [],
-  });
+  const [scanResults, setScanResults] = useState({ loading: false, error: null, data: [] });
+  const [advancedResults, setAdvancedResults] = useState({ loading: false, error: null, data: [] });
   const [infoBoxPosition, setInfoBoxPosition] = useState({ x: 0, y: 0 });
   const [targetScreenPos, setTargetScreenPos] = useState({ x: 0, y: 0 });
+  const [showNetworkMap, setShowNetworkMap] = useState(false);
+  const [scanCooldown, setScanCooldown] = useState(false);
   
-  // Add scan cooldown state
-  const [scanCooldownActive, setScanCooldownActive] = useState(false);
-  const [scanCooldownTimeoutId, setScanCooldownTimeoutId] = useState(null);
+  // Add state for node visualization
+  const [visualizedNodeId, setVisualizedNodeId] = useState(null);
 
-  // Function to activate scan cooldown
-  const activateScanCooldown = useCallback((duration = 5000) => {
-    setScanCooldownActive(true);
-    
-    // Clear any existing timeout
-    if (scanCooldownTimeoutId) {
-      clearTimeout(scanCooldownTimeoutId);
-    }
-    
-    // Set new timeout
-    const timeoutId = setTimeout(() => {
-      setScanCooldownActive(false);
-    }, duration);
-    
-    setScanCooldownTimeoutId(timeoutId);
-  }, [scanCooldownTimeoutId]);
+  // Function to toggle network map
+  const toggleNetworkMap = () => {
+    setShowNetworkMap(!showNetworkMap);
+  };
 
-  // Function to cancel scan cooldown (if needed)
-  const cancelScanCooldown = useCallback(() => {
-    if (scanCooldownTimeoutId) {
-      clearTimeout(scanCooldownTimeoutId);
-      setScanCooldownTimeoutId(null);
-    }
-    setScanCooldownActive(false);
-  }, [scanCooldownTimeoutId]);
+  // Cooldown function for scan operations
+  const activateScanCooldown = (duration = 5000) => {
+    setScanCooldown(true);
+    setTimeout(() => setScanCooldown(false), duration);
+  };
+
+  // Create a ref to expose context to window
+  const contextRef = useRef();
+  const contextValue = {
+    selectedNode,
+    setSelectedNode,
+    scanResults,
+    setScanResults,
+    advancedResults,
+    setAdvancedResults,
+    infoBoxPosition,
+    setInfoBoxPosition,
+    targetScreenPos,
+    setTargetScreenPos,
+    showNetworkMap,
+    setShowNetworkMap,
+    toggleNetworkMap,
+    scanCooldownActive: scanCooldown,
+    activateScanCooldown,
+    // Add visualization state and functions
+    visualizedNodeId,
+    setVisualizedNodeId
+  };
+
+  // Expose context to window for global access
+  contextRef.current = contextValue;
+  if (typeof window !== 'undefined') {
+    window.UI_CONTEXT_REF = contextRef;
+    window.uiContext = contextValue;
+  }
 
   return (
-    <UIContext.Provider
-      value={{
-        selectedNode,
-        setSelectedNode,
-        scanResults,
-        setScanResults,
-        advancedResults,
-        setAdvancedResults,
-        infoBoxPosition,
-        setInfoBoxPosition,
-        targetScreenPos,
-        setTargetScreenPos,
-        scanCooldownActive,
-        activateScanCooldown,
-        cancelScanCooldown
-      }}
-    >
+    <UIContext.Provider value={contextValue}>
       {children}
     </UIContext.Provider>
   );
 };
-
-export const useUI = () => useContext(UIContext);

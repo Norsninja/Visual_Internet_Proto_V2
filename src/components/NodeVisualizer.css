@@ -1,0 +1,285 @@
+/* LCARS-inspired Node Visualizer Styles - Simplified */
+
+@import url('https://fonts.googleapis.com/css2?family=Antonio:wght@400;700&display=swap');
+
+/* Main container */
+.mainscreen-visualizer-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: rgba(0, 0, 0, 0.85);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  pointer-events: auto;
+  animation: fadeIn 0.4s ease-out;
+  font-family: 'Antonio', sans-serif;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.mainscreen-visualizer-container {
+  width: 95vw;
+  height: 85vh;
+  background-color: rgba(0, 10, 30, 0.85);
+  border: 2px solid #99CCFF;
+  border-radius: 16px;
+  box-shadow: 0 0 30px rgba(0, 128, 255, 0.3);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* LCARS Header */
+.mainscreen-header {
+  background-color: #000;
+  display: flex;
+  justify-content: space-between;
+  height: 60px;
+  color: #FFCC99;
+}
+
+.lcars-header-left, .lcars-header-right {
+  display: flex;
+  align-items: center;
+}
+
+.lcars-pill {
+  height: 40px;
+  width: 80px;
+  background-color: #CC99CC;
+  border-radius: 20px;
+  margin: 0 20px;
+}
+
+.lcars-header-left .lcars-pill {
+  background-color: #FF9966;
+}
+
+.lcars-title {
+  font-size: 24px;
+  font-weight: bold;
+  color: #FFCC99;
+  margin-right: 20px;
+  letter-spacing: 1px;
+}
+
+.mainscreen-close-btn {
+  background-color: #CC6666;
+  color: #000;
+  border: none;
+  padding: 8px 15px;
+  border-radius: 15px;
+  cursor: pointer;
+  font-weight: bold;
+  margin-right: 20px;
+  font-family: 'Antonio', sans-serif;
+}
+
+.mainscreen-close-btn:hover {
+  background-color: #FF6666;
+}
+
+/* Main content area */
+.mainscreen-content-area {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.left-panel, .right-panel {
+  width: 250px;
+  background-color: #000910;
+  padding: 15px;
+  color: #FFCC99;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+}
+
+.visualization-main {
+  flex: 1;
+  position: relative;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* LCARS panel sections */
+.lcars-section {
+  background-color: rgba(0, 20, 40, 0.7);
+  border-radius: 10px;
+  padding: 10px;
+  border-left: 4px solid #9999FF;
+}
+
+.lcars-section-header {
+  color: #FFCC99;
+  font-size: 18px;
+  font-weight: bold;
+  margin-bottom: 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid #3366CC;
+}
+
+.lcars-data-item {
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(153, 204, 255, 0.1);
+  padding-bottom: 5px;
+}
+
+.lcars-label {
+  color: #99CCFF;
+}
+
+.lcars-value {
+  color: #FFFFFF;
+  text-align: right;
+}
+
+.status-scanned {
+  color: #99FF99;
+}
+
+/* Text block for multi-line content */
+.lcars-text-block {
+  color: #FFFFFF;
+  white-space: pre-line;
+  line-height: 1.4;
+  max-height: 200px;
+  overflow-y: auto;
+  padding-right: 5px;
+}
+
+.port-list {
+  font-family: monospace;
+  font-size: 14px;
+}
+
+/* Loading effect */
+.mainscreen-loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background-color: rgba(0, 0, 0, 0.7);
+  z-index: 10;
+}
+
+.scanner-beam {
+  width: 80%;
+  height: 4px;
+  background-color: #00FFFF;
+  box-shadow: 0 0 20px #00FFFF;
+  animation: scannerBeam 2s infinite;
+}
+
+@keyframes scannerBeam {
+  0% { transform: translateY(-100px); }
+  50% { transform: translateY(100px); }
+  100% { transform: translateY(-100px); }
+}
+
+.loading-text {
+  margin-top: 20px;
+  color: #99CCFF;
+  font-size: 20px;
+  text-shadow: 0 0 10px #00AAFF;
+}
+
+/* Controls section */
+.lcars-controls {
+  background-color: rgba(0, 20, 40, 0.7);
+  border-radius: 10px;
+  padding: 10px;
+  border-left: 4px solid #FFCC99;
+  margin-top: auto;
+}
+
+.lcars-instruction {
+  color: #99CCFF;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+/* Canvas container */
+.mainscreen-canvas {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Scanning text with dots animation */
+.scanning-text {
+  color: #99CCFF;
+}
+
+.dot-1, .dot-2, .dot-3 {
+  animation: dotFade 1.5s infinite;
+}
+
+.dot-2 {
+  animation-delay: 0.5s;
+}
+
+.dot-3 {
+  animation-delay: 1s;
+}
+
+@keyframes dotFade {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
+/* Responsive adjustments */
+@media screen and (max-width: 1200px) {
+  .left-panel, .right-panel {
+    width: 200px;
+  }
+}
+
+@media screen and (max-width: 900px) {
+  .left-panel, .right-panel {
+    width: 150px;
+  }
+  
+  .lcars-title, .lcars-section-header {
+    font-size: 16px;
+  }
+  
+  .lcars-pill {
+    width: 40px;
+  }
+}
+
+@media screen and (max-width: 700px) {
+  .mainscreen-content-area {
+    flex-direction: column;
+  }
+  
+  .left-panel, .right-panel {
+    width: 100%;
+    max-height: 150px;
+  }
+  
+  .visualization-main {
+    order: -1;
+  }
+}

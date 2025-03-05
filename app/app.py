@@ -11,10 +11,10 @@ from traffic_monitor import start_packet_capture
 
 from db import db
 from flask_caching import Cache
-# from gene_evolution_job import GeneEvolutionJob
+from gene_evolution_job import GeneEvolutionJob
 
 # Create gene evolution job - after initializing cache
-# gene_evolution_job = GeneEvolutionJob(db, interval=300)
+gene_evolution_job = GeneEvolutionJob(db, interval=300)
 
 app = Flask(__name__)
 CORS(app)
@@ -38,5 +38,5 @@ if __name__ == '__main__':
     threading.Thread(target=start_packet_capture, daemon=True).start()
     threading.Thread(target=orchestrator.schedule_full_scan, daemon=True).start()
     # Start the gene evolution job
-    # gene_evolution_job.start()
+    gene_evolution_job.start()
     app.run(host='0.0.0.0', port=5000)

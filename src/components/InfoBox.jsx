@@ -138,7 +138,14 @@ const InfoBox = ({ nodeData, scanResults, onAction }) => {
             {scanCooldownActive ? "Cooldown..." : "Scan Ports"}
           </button>
         )}
-        
+        {nodeData.fully_scanned && (
+          <button
+            className="info-box-button view-ca-button"
+            onClick={() => onAction('visualizeNode', nodeData.id)}
+          >
+            <span className="button-icon">🔍</span> View CA Simulation
+          </button>
+        )}        
         {showTravelButton && (
           <button style={styles.actionButton} onClick={() => onAction("travel")}>
             Travel

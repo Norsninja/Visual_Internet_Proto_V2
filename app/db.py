@@ -17,7 +17,7 @@ class Neo4jDB:
     recently_seen_nodes = {}          
     def __init__(self, uri=NEO4J_URI, user=NEO4J_USER, password=NEO4J_PASSWORD):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
-        # self.init_constraints()  # Uncomment to run once if needed
+        self.init_constraints()  # Uncomment to run once if needed
 
     def close(self):
         self.driver.close()
@@ -780,6 +780,24 @@ class Neo4jDB:
         with self.driver.session() as session:
             record = session.run(query, node_id=node_id).single()
             return record["nodeDetails"] if record and record["nodeDetails"] else None
+        
+    def mark_node_as_found(self, node_id):
+        """
+        Sets the first_explored timestamp if the node exists and hasn't been explored yet.
+        This timestamp only gets set once and never changes afterward.
+        """
+        query = """
+        MATCH (n {id: $node_id})
+        WHERE n.found IS NULL
+        SET n.found = timestamp()
+        """
+        with self.driver.session() as session:
+            session.run(query, node_id=node_id)
+            
+        # We need to bust the cache since we modified the node
+        from cache_helpers import bust_node_details_cache
+        bust_node_details_cache(node_id)
+
 
 # Initialize the Neo4j database instance
 db = Neo4jDB()

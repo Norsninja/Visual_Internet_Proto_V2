@@ -1,4 +1,4 @@
-// ThreeCanvas.jsx
+// ThreeCanvas.jsx - Updated initialization code
 import React, { useRef, useEffect } from 'react';
 import * as THREE from 'three';
 
@@ -11,23 +11,32 @@ import { EventsManager } from '../events.js';
 import { NetworkManager } from '../network.js';
 import { TrafficMeter } from '../ui/traffic_meter.js';
 import { Group } from '@tweenjs/tween.js';
+import { cleanupCANodes } from '../nodes/CA_node_material.js';
+import { RequestQueue } from '../nodes/request_queue.js';
+import { MysteriousNodesManager } from '../mysteriousMaterial.js';
 // Import NetworkMap dynamically when needed (not immediately)
 
 const ThreeCanvas = ({ onReady }) => {
   const containerRef = useRef();
 
   useEffect(() => {
+    // IMPORTANT: Initialize RequestQueue first to ensure it's available for all components
+    if (!window.requestQueue) {
+      window.requestQueue = new RequestQueue();
+      console.log("✅ Request queue initialized from ThreeCanvas");
+    }
+    
     // Create Tween group and set global constants
     const tweenGroup = new Group();
     window.NODE_SCALE = 15;
-
+    
     // Create the renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.domElement.style.position = "absolute";
     renderer.domElement.style.top = "0px";
     renderer.domElement.style.left = "0px";
-
+    window.renderer = renderer;
     // Append renderer's canvas to our container
     const container = containerRef.current;
     container.appendChild(renderer.domElement);
@@ -69,7 +78,7 @@ const ThreeCanvas = ({ onReady }) => {
     networkManager.startTrafficSensorUpdates(5000);
     edgesManager.pollTrafficRate();
 
-    window.maxTravelDistance = 500;
+    window.maxTravelDistance = 1000;
 
     // Global key state manager
     window.keyStates = {};
@@ -87,28 +96,60 @@ const ThreeCanvas = ({ onReady }) => {
 
     // Modified animation loop - exposed globally for pausing/resuming
     const animate = (time) => {
-      // Store animation frame ID globally for cancellation
       window.animationFrameId = requestAnimationFrame(animate);
       const delta = time * 0.001;
-
-      // Compute network metrics (if needed for background animations)
-      const nodesArray = nodesManager.getNodesArray();
-      const totalNodes = nodesArray.length;
-      const localNodes = nodesArray.filter(n => n.userData.type === "device").length;
-      const externalNodes = nodesArray.filter(n => n.userData.type === "external").length;
-      const trafficLevel = window.getTrafficLevel ? window.getTrafficLevel() : 0;
-      const metrics = { trafficLevel, totalNodes, localNodes, externalNodes };
-
-      if (sceneManager.animateBackground) {
-        sceneManager.animateBackground(delta, metrics);
-      }
-
-      tweenGroup.update(time);
-      cameraController.update();
-      edgesManager.updateEdgePositions();
-      edgesManager.updateTraffic();
-      renderer.render(scene, window.camera);
+      
+      // Process ship controls FIRST for better responsiveness
       ship.updateCockpitControls(delta);
+      
+      // Then update camera
+      cameraController.update();
+      
+      // Then update scene elements
+      tweenGroup.update(time);
+      
+      // Use frame-skipping for heavy operations when framerate is low
+      // Get FPS estimation (smooth over multiple frames)
+      if (!window._lastFpsUpdate) window._lastFpsUpdate = time;
+      if (!window._frameCount) window._frameCount = 0;
+      if (!window._currentFps) window._currentFps = 60;
+      
+      window._frameCount++;
+      const timeSinceLastFpsUpdate = time - window._lastFpsUpdate;
+      
+      if (timeSinceLastFpsUpdate > 1000) { // Update FPS calculation every second
+        window._currentFps = window._frameCount / (timeSinceLastFpsUpdate / 1000);
+        window._frameCount = 0;
+        window._lastFpsUpdate = time;
+      }
+      
+      // Adapt processing based on framerate
+      const lowFramerate = window._currentFps < 30;
+      
+      // Stagger heavy updates across frames when framerate is low
+      const frameIndex = window._frameCount % 3;
+      
+      if (!lowFramerate || frameIndex === 0) {
+        edgesManager.updateEdgePositions();
+      }
+      
+      if (!lowFramerate || frameIndex === 1) {
+        edgesManager.updateTraffic();
+      }
+      
+      if (!lowFramerate || frameIndex === 2) {
+        if (window.caNodesManager && window.caNodesManager.update) {
+          window.caNodesManager.update(time);
+        }
+      }
+      // New: Update mysterious nodes
+      if (!lowFramerate || frameIndex === 3) {
+        if (window.mysteriousNodesManager && window.mysteriousNodesManager.update) {
+          window.mysteriousNodesManager.update(scene, window.camera);
+        }
+      }      
+      // Finally render
+      renderer.render(scene, window.camera);
     };
     
     // Expose animation function globally
@@ -119,6 +160,12 @@ const ThreeCanvas = ({ onReady }) => {
     
     // Initialize TrafficMeter
     TrafficMeter();
+    
+    // After initialization, enable CA visualization by default
+    if (typeof window.setCAVisualizationEnabled === 'function') {
+      window.setCAVisualizationEnabled(true);
+      console.log("CA visualization enabled by default");
+    }
     
     // Cleanup on unmount
     return () => {
@@ -142,6 +189,14 @@ const ThreeCanvas = ({ onReady }) => {
       // Clean up network map if it exists
       if (window.networkMap && typeof window.networkMap.destroy === 'function') {
         window.networkMap.destroy();
+      }
+      cleanupCANodes();
+      if (window.mysteriousNodesManager) {
+        window.mysteriousNodesManager.nodes.forEach(node => {
+          if (node.material && node.material.userData.isMysteriousMaterial) {
+            node.material.userData.cubeRenderTarget.dispose();
+          }
+        });
       }
     };
   }, [onReady]);

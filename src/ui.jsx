@@ -3,7 +3,8 @@ import * as THREE from 'three';
 import DraggableInfoBox from './components/DraggableInfoBox.jsx';
 import ConnectorLine from './components/ConnectorLine.jsx';
 import { UIContext } from './components/UIContext.jsx';
-
+import NodeVisualizer from './components/NodeVisualizer.jsx';
+import './components/NodeVisualizer.css';
 // The UIManager component renders the InfoBox and ConnectorLine based on UIContext state.
 const UIManager = ({ renderer }) => {
   const { 
@@ -19,6 +20,8 @@ const UIManager = ({ renderer }) => {
     setTargetScreenPos,
     // Add the new cooldown functions
     activateScanCooldown,
+    visualizedNodeId,
+    setVisualizedNodeId,
     scanCooldownActive
   } = useContext(UIContext);
 
@@ -286,6 +289,9 @@ const UIManager = ({ renderer }) => {
     }
     
     switch (action) {
+      case "visualizeNode":
+      setVisualizedNodeId(payload || data.id);
+      break;
       case "scanPorts":
         try {
             // Ask user if they want a deep scan
@@ -606,20 +612,39 @@ const UIManager = ({ renderer }) => {
 
   // If no node is selected, we render nothing (or you could render a placeholder)
   if (!selectedNode) return null;
-
+  const renderVisualizer = visualizedNodeId && (
+    <NodeVisualizer 
+      nodeId={visualizedNodeId} 
+      onClose={() => setVisualizedNodeId(null)} 
+    />
+  );
   return (
     <>
-      <DraggableInfoBox
-        nodeData={selectedNode.userData}
-        scanResults={scanResults}
-        onAction={handleAction}
-        targetScreenPos={targetScreenPos}
-        onPositionChange={(pos) => setInfoBoxPosition(pos)}
-      />
-      <ConnectorLine 
-        from={infoBoxPosition} 
-        to={targetScreenPos} 
-      />
+      {selectedNode && (
+        <>
+          <DraggableInfoBox
+            nodeData={selectedNode.userData}
+            scanResults={scanResults}
+            onAction={handleAction}
+            targetScreenPos={targetScreenPos}
+            onPositionChange={(pos) => setInfoBoxPosition(pos)}
+          />
+          <ConnectorLine 
+            from={infoBoxPosition} 
+            to={targetScreenPos} 
+          />
+        </>
+      )}
+      
+      {/* Pass scan results to the visualizer */}
+      {visualizedNodeId && selectedNode && (
+        <NodeVisualizer 
+          nodeId={visualizedNodeId}
+          nodeData={selectedNode.userData}
+          scanResults={scanResults}
+          onClose={() => setVisualizedNodeId(null)} 
+        />
+      )}
     </>
   );
 };

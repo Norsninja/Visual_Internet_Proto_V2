@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Tween, Easing } from '@tweenjs/tween.js';
+import { setCAVisualizationEnabled } from './nodes/CA_node_material';
 
 export class Ship {
   constructor(tweenGroup) {
@@ -83,7 +84,8 @@ export class Ship {
   enterCockpit() {
     this.currentView = 'cockpit';
     console.log("Entering cockpit view");
-
+    // Enable CA visualization when entering cockpit
+    // setCAVisualizationEnabled(true);
     if (window.cameraController) {
       const camera = window.cameraController.camera;
       if (camera.parent) camera.parent.remove(camera);
@@ -113,7 +115,8 @@ export class Ship {
   exitCockpit() {
     this.currentView = 'external';
     console.log("Exiting cockpit view");
-  
+    // Disable CA visualization when exiting cockpit
+    // setCAVisualizationEnabled(false);  
     if (window.cameraController) {
       const camera = window.cameraController.camera;
       // Remove the camera from its cockpit parent (e.g., from pitchObject)
